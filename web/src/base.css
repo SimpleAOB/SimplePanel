@@ -1,0 +1,207 @@
+/* Base element styles. Visual values come from theme.css tokens only. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--sp-bg-main);
+  color: var(--sp-text);
+  font-family: var(--sp-font-sans);
+  font-size: var(--sp-text-md);
+  line-height: var(--sp-line-height);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: var(--sp-weight-bold);
+  line-height: 1.25;
+}
+h1 { font-size: var(--sp-text-xl); }
+h2 { font-size: var(--sp-text-lg); }
+h3 { font-size: var(--sp-text-md); }
+
+p { margin: 0; }
+
+a {
+  color: var(--sp-accent);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+code,
+pre,
+.mono {
+  font-family: var(--sp-font-mono);
+  font-size: var(--sp-text-sm);
+}
+
+:focus-visible {
+  outline: 2px solid var(--sp-focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---- Buttons ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-space-2);
+  height: 34px;
+  padding: 0 var(--sp-space-4);
+  border: 1px solid var(--sp-border-strong);
+  border-radius: var(--sp-radius-md);
+  background: var(--sp-bg-elevated);
+  color: var(--sp-text);
+  font: inherit;
+  font-size: var(--sp-text-sm);
+  font-weight: var(--sp-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--sp-transition), border-color var(--sp-transition);
+}
+.btn:hover:not(:disabled) { background: var(--sp-bg-hover); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn.primary {
+  background: var(--sp-accent);
+  border-color: transparent;
+  color: var(--sp-accent-contrast);
+}
+.btn.primary:hover:not(:disabled) { background: var(--sp-accent-hover); }
+.btn.danger {
+  background: transparent;
+  border-color: var(--sp-danger);
+  color: var(--sp-danger);
+}
+.btn.danger:hover:not(:disabled) { background: var(--sp-danger); color: var(--sp-danger-contrast); }
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.btn.small { height: 28px; padding: 0 var(--sp-space-3); }
+.btn.icon { width: 34px; padding: 0; }
+
+/* ---- Forms ---- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-space-1);
+  min-width: 0;
+}
+.field > span {
+  font-size: var(--sp-text-xs);
+  font-weight: var(--sp-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--sp-text-muted);
+}
+.field small {
+  color: var(--sp-text-faint);
+  font-size: var(--sp-text-xs);
+}
+input[type='text'],
+input[type='password'],
+input[type='number'],
+input[type='url'],
+select,
+textarea {
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-space-2) var(--sp-space-3);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-md);
+  background: var(--sp-bg-input);
+  color: var(--sp-text);
+  font: inherit;
+  font-size: var(--sp-text-sm);
+}
+textarea {
+  font-family: var(--sp-font-mono);
+  resize: vertical;
+  min-height: 120px;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--sp-accent);
+  box-shadow: 0 0 0 3px var(--sp-focus-ring);
+}
+
+.row {
+  display: flex;
+  gap: var(--sp-space-3);
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.row > .field { flex: 1 1 160px; }
+
+.card {
+  background: var(--sp-bg-panel);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-lg);
+  padding: var(--sp-space-4);
+}
+
+.error {
+  padding: var(--sp-space-2) var(--sp-space-3);
+  border: 1px solid var(--sp-danger);
+  border-radius: var(--sp-radius-md);
+  color: var(--sp-danger);
+  font-size: var(--sp-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.muted { color: var(--sp-text-muted); }
+.faint { color: var(--sp-text-faint); }
+
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: var(--sp-radius-md);
+  background: var(--sp-bg-input);
+  border: 1px solid var(--sp-border);
+}
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--sp-text-muted);
+  font: inherit;
+  font-size: var(--sp-text-sm);
+  padding: var(--sp-space-1) var(--sp-space-3);
+  border-radius: var(--sp-radius-sm);
+  cursor: pointer;
+}
+.segmented button.active {
+  background: var(--sp-bg-elevated);
+  color: var(--sp-text);
+  box-shadow: 0 1px 2px var(--sp-border-strong);
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--sp-radius-round);
+  background: var(--sp-text-faint);
+  flex: none;
+}
+.dot.running, .dot.succeeded { background: var(--sp-success); }
+.dot.starting, .dot.running-deploy, .dot.queued { background: var(--sp-warning); }
+.dot.failing, .dot.failed { background: var(--sp-danger); }

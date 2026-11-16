@@ -1,0 +1,55 @@
+// Helpers to convert between the API's app object and the form model.
+
+export function emptyForm() {
+  return {
+    name: '',
+    source: 'git',
+    image: '',
+    gitUrl: '',
+    gitBranch: '',
+    gitToken: '',
+    clearGitToken: false,
+    buildPath: '',
+    dockerfile: '',
+    env: '',
+    replicas: 1,
+    cpuLimit: 0,
+    memoryMb: 0,
+    command: '',
+    volumes: [],
+    ports: [],
+  };
+}
+
+export function formFromApp(a) {
+  return {
+    ...emptyForm(),
+    name: a.name,
+    source: a.source,
+    image: a.image,
+    gitUrl: a.gitUrl,
+    gitBranch: a.gitBranch,
+    buildPath: a.buildPath,
+    dockerfile: a.dockerfile,
+    env: a.env,
+    replicas: a.replicas,
+    cpuLimit: a.cpuLimit,
+    memoryMb: a.memoryMb,
+    command: a.command,
+    volumes: a.volumes.map((v) => ({ ...v })),
+    ports: a.ports.map((p) => ({ ...p })),
+  };
+}
+
+export function payload(f) {
+  return {
+    ...f,
+    replicas: Number(f.replicas) || 0,
+    cpuLimit: Number(f.cpuLimit) || 0,
+    memoryMb: Number(f.memoryMb) || 0,
+    volumes: f.volumes.filter((v) => v.name || v.path).map((v) => ({ name: v.name.trim(), path: v.path.trim() })),
+    ports: f.ports
+      .filter((p) => p.published || p.target)
+      .map((p) => ({ published: Number(p.published), target: Number(p.target), protocol: p.protocol })),
+  };
+}

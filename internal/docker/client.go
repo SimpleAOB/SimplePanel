@@ -1,0 +1,533 @@
+// Package docker is a deliberately small client for the Docker Engine API.
+// It covers only what SimplePanel needs, which keeps the dependency tree
+// tiny compared to the full Docker SDK.
+package docker
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// maxAPIVersion is the newest API version this client is written against.
+// Older daemons are used at their own version via negotiation.
+const maxAPIVersion = "1.47"
+
+// Client talks to the Docker Engine over a unix socket.
+type Client struct {
+	http    *http.Client
+	version string
+}
+
+// ErrNotFound is returned when Docker answers 404.
+var ErrNotFound = errors.New("docker: not found")
+
+// APIError carries a non-2xx response from Docker.
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("docker: %s (HTTP %d)", e.Message, e.Status) }
+
+// New returns a client for the socket at path (usually /var/run/docker.sock).
+func New(socketPath string) *Client {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+		MaxIdleConns:    10,
+		IdleConnTimeout: 30 * time.Second,
+	}
+	return &Client{http: &http.Client{Transport: tr}, version: maxAPIVersion}
+}
+
+// Negotiate picks the lower of the daemon's API version and ours.
+func (c *Client) Negotiate(ctx context.Context) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/_ping", nil)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker: cannot reach daemon: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if v := resp.Header.Get("Api-Version"); v != "" && versionLess(v, maxAPIVersion) {
+		c.version = v
+	}
+	return nil
+}
+
+func versionLess(a, b string) bool {
+	pa, pb := strings.SplitN(a, ".", 2), strings.SplitN(b, ".", 2)
+	if len(pa) != 2 || len(pb) != 2 {
+		return false
+	}
+	ma, _ := strconv.Atoi(pa[0])
+	mb, _ := strconv.Atoi(pb[0])
+	if ma != mb {
+		return ma < mb
+	}
+	na, _ := strconv.Atoi(pa[1])
+	nb, _ := strconv.Atoi(pb[1])
+	return na < nb
+}
+
+func (c *Client) do(ctx context.Context, method, path string, q url.Values, body io.Reader, hdr map[string]string) (*http.Response, error) {
+	u := "http://docker/v" + c.version + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		var e struct {
+			Message string `json:"message"`
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if json.Unmarshal(b, &e) != nil || e.Message == "" {
+			e.Message = strings.TrimSpace(string(b))
+		}
+		return nil, &APIError{Status: resp.StatusCode, Message: e.Message}
+	}
+	return resp, nil
+}
+
+func (c *Client) doJSON(ctx context.Context, method, path string, q url.Values, in, out any) error {
+	var body io.Reader
+	hdr := map[string]string{}
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+		hdr["Content-Type"] = "application/json"
+	}
+	resp, err := c.do(ctx, method, path, q, body, hdr)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if out == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// ---- System / Swarm ----
+
+// Info is the subset of /info we use.
+type Info struct {
+	ServerVersion string
+	Swarm         struct {
+		LocalNodeState   string
+		ControlAvailable bool
+		NodeID           string
+	}
+}
+
+func (c *Client) Info(ctx context.Context) (*Info, error) {
+	var i Info
+	return &i, c.doJSON(ctx, http.MethodGet, "/info", nil, nil, &i)
+}
+
+// ---- Images ----
+
+// streamMsg is one line of Docker's JSON progress stream.
+type streamMsg struct {
+	Stream      string `json:"stream"`
+	Status      string `json:"status"`
+	Progress    string `json:"progress"`
+	ID          string `json:"id"`
+	Error       string `json:"error"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
+}
+
+// consumeStream copies human-readable lines to w and returns the first error
+// reported in the stream.
+func consumeStream(r io.Reader, w io.Writer) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	for sc.Scan() {
+		var m streamMsg
+		if json.Unmarshal(sc.Bytes(), &m) != nil {
+			continue
+		}
+		if m.Error != "" {
+			return errors.New(strings.TrimSpace(m.Error))
+		}
+		if w == nil {
+			continue
+		}
+		switch {
+		case m.Stream != "":
+			io.WriteString(w, m.Stream)
+		case m.Status != "" && m.Progress == "":
+			if m.ID != "" {
+				fmt.Fprintf(w, "%s: %s\n", m.ID, m.Status)
+			} else {
+				fmt.Fprintln(w, m.Status)
+			}
+		}
+	}
+	return sc.Err()
+}
+
+// ImagePull pulls ref, writing progress to w.
+func (c *Client) ImagePull(ctx context.Context, ref string, w io.Writer) error {
+	name, tag := SplitTag(ref)
+	q := url.Values{"fromImage": {name}}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return consumeStream(resp.Body, w)
+}
+
+// SplitTag splits "repo:tag" (or "repo@digest") into name and tag/digest.
+// Registry ports (host:5000/repo) are handled.
+func SplitTag(ref string) (string, string) {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		return ref[:i], ref[i+1:]
+	}
+	slash := strings.LastIndex(ref, "/")
+	if i := strings.LastIndex(ref, ":"); i > slash {
+		return ref[:i], ref[i+1:]
+	}
+	return ref, "latest"
+}
+
+// ImageDigestRef returns "repo@sha256:..." for a pulled image when Docker
+// knows its registry digest, so services are pinned to exact content.
+func (c *Client) ImageDigestRef(ctx context.Context, ref string) (string, error) {
+	var img struct {
+		RepoDigests []string
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/images/"+url.PathEscape(ref)+"/json", nil, nil, &img); err != nil {
+		return "", err
+	}
+	name, _ := SplitTag(ref)
+	for _, d := range img.RepoDigests {
+		if n, _ := SplitTag(d); n == name || strings.HasSuffix(n, "/"+name) {
+			return d, nil
+		}
+	}
+	return ref, nil
+}
+
+// BuildOptions configures an image build.
+type BuildOptions struct {
+	Tag        string
+	Dockerfile string
+	BuildArgs  map[string]string
+}
+
+// ImageBuild builds an image from a tar build context.
+func (c *Client) ImageBuild(ctx context.Context, tarCtx io.Reader, opt BuildOptions, w io.Writer) error {
+	q := url.Values{"t": {opt.Tag}, "rm": {"1"}, "forcerm": {"1"}, "pull": {"1"}}
+	if opt.Dockerfile != "" {
+		q.Set("dockerfile", opt.Dockerfile)
+	}
+	if len(opt.BuildArgs) > 0 {
+		b, _ := json.Marshal(opt.BuildArgs)
+		q.Set("buildargs", string(b))
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/build", q, tarCtx, map[string]string{"Content-Type": "application/x-tar"})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return consumeStream(resp.Body, w)
+}
+
+// ---- Networks ----
+
+func (c *Client) NetworkExists(ctx context.Context, name string) (bool, error) {
+	err := c.doJSON(ctx, http.MethodGet, "/networks/"+url.PathEscape(name), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// NetworkEnsure creates a swarm-scoped overlay network if it doesn't exist.
+func (c *Client) NetworkEnsure(ctx context.Context, name string, labels map[string]string) error {
+	ok, err := c.NetworkExists(ctx, name)
+	if err != nil || ok {
+		return err
+	}
+	body := map[string]any{"Name": name, "Driver": "overlay", "Attachable": false, "Labels": labels}
+	err = c.doJSON(ctx, http.MethodPost, "/networks/create", nil, body, nil)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict {
+		return nil
+	}
+	return err
+}
+
+// NetworkRemove deletes a network; missing networks are not an error.
+func (c *Client) NetworkRemove(ctx context.Context, name string) error {
+	err := c.doJSON(ctx, http.MethodDelete, "/networks/"+url.PathEscape(name), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// ---- Services ----
+
+type Service struct {
+	ID           string
+	Version      struct{ Index uint64 }
+	Spec         ServiceSpec
+	UpdateStatus *struct {
+		State   string
+		Message string
+	}
+}
+
+type ServiceSpec struct {
+	Name           string            `json:"Name"`
+	Labels         map[string]string `json:"Labels,omitempty"`
+	TaskTemplate   TaskSpec          `json:"TaskTemplate"`
+	Mode           ServiceMode       `json:"Mode"`
+	UpdateConfig   *UpdateConfig     `json:"UpdateConfig,omitempty"`
+	RollbackConfig *UpdateConfig     `json:"RollbackConfig,omitempty"`
+	EndpointSpec   *EndpointSpec     `json:"EndpointSpec,omitempty"`
+}
+
+type TaskSpec struct {
+	ContainerSpec ContainerSpec   `json:"ContainerSpec"`
+	Resources     *Resources      `json:"Resources,omitempty"`
+	RestartPolicy *RestartPolicy  `json:"RestartPolicy,omitempty"`
+	Placement     *Placement      `json:"Placement,omitempty"`
+	Networks      []NetworkAttach `json:"Networks,omitempty"`
+	ForceUpdate   uint64          `json:"ForceUpdate,omitempty"`
+	LogDriver     *LogDriver      `json:"LogDriver,omitempty"`
+}
+
+type ContainerSpec struct {
+	Image  string            `json:"Image"`
+	Labels map[string]string `json:"Labels,omitempty"`
+	Args   []string          `json:"Args,omitempty"`
+	Env    []string          `json:"Env,omitempty"`
+	Mounts []Mount           `json:"Mounts,omitempty"`
+}
+
+type Mount struct {
+	Type   string `json:"Type"`
+	Source string `json:"Source"`
+	Target string `json:"Target"`
+}
+
+type Resources struct {
+	Limits *Limits `json:"Limits,omitempty"`
+}
+
+type Limits struct {
+	NanoCPUs    int64 `json:"NanoCPUs,omitempty"`
+	MemoryBytes int64 `json:"MemoryBytes,omitempty"`
+}
+
+type RestartPolicy struct {
+	Condition   string `json:"Condition"`
+	Delay       int64  `json:"Delay,omitempty"`
+	MaxAttempts uint64 `json:"MaxAttempts,omitempty"`
+}
+
+type Placement struct {
+	Constraints []string `json:"Constraints,omitempty"`
+}
+
+type NetworkAttach struct {
+	Target  string   `json:"Target"`
+	Aliases []string `json:"Aliases,omitempty"`
+}
+
+type LogDriver struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options,omitempty"`
+}
+
+type ServiceMode struct {
+	Replicated *Replicated `json:"Replicated,omitempty"`
+}
+
+type Replicated struct {
+	Replicas uint64 `json:"Replicas"`
+}
+
+type UpdateConfig struct {
+	Parallelism   uint64 `json:"Parallelism"`
+	Delay         int64  `json:"Delay,omitempty"`
+	FailureAction string `json:"FailureAction,omitempty"`
+	Monitor       int64  `json:"Monitor,omitempty"`
+	Order         string `json:"Order,omitempty"`
+}
+
+type EndpointSpec struct {
+	Mode  string     `json:"Mode,omitempty"`
+	Ports []PortSpec `json:"Ports,omitempty"`
+}
+
+type PortSpec struct {
+	Protocol      string `json:"Protocol"`
+	TargetPort    uint32 `json:"TargetPort"`
+	PublishedPort uint32 `json:"PublishedPort"`
+	PublishMode   string `json:"PublishMode,omitempty"`
+}
+
+func (c *Client) ServiceInspect(ctx context.Context, name string) (*Service, error) {
+	var s Service
+	if err := c.doJSON(ctx, http.MethodGet, "/services/"+url.PathEscape(name), nil, nil, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (c *Client) ServiceCreate(ctx context.Context, spec ServiceSpec) (string, error) {
+	var out struct{ ID string }
+	err := c.doJSON(ctx, http.MethodPost, "/services/create", nil, spec, &out)
+	return out.ID, err
+}
+
+func (c *Client) ServiceUpdate(ctx context.Context, id string, version uint64, spec ServiceSpec) error {
+	q := url.Values{"version": {strconv.FormatUint(version, 10)}}
+	return c.doJSON(ctx, http.MethodPost, "/services/"+url.PathEscape(id)+"/update", q, spec, nil)
+}
+
+func (c *Client) ServiceRemove(ctx context.Context, id string) error {
+	err := c.doJSON(ctx, http.MethodDelete, "/services/"+url.PathEscape(id), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// Task is the subset of a Swarm task we show in the UI.
+type Task struct {
+	ID           string
+	DesiredState string
+	Status       struct {
+		Timestamp time.Time
+		State     string
+		Message   string
+		Err       string
+	}
+	Spec struct {
+		ContainerSpec struct{ Image string }
+	}
+}
+
+func (c *Client) ServiceTasks(ctx context.Context, service string) ([]Task, error) {
+	f, _ := json.Marshal(map[string][]string{"service": {service}})
+	var tasks []Task
+	err := c.doJSON(ctx, http.MethodGet, "/tasks", url.Values{"filters": {string(f)}}, nil, &tasks)
+	return tasks, err
+}
+
+// ServiceLogs returns the last `tail` lines of a service's logs, demultiplexed.
+func (c *Client) ServiceLogs(ctx context.Context, service string, tail int) (string, error) {
+	q := url.Values{
+		"stdout":     {"1"},
+		"stderr":     {"1"},
+		"timestamps": {"1"},
+		"tail":       {strconv.Itoa(tail)},
+	}
+	resp, err := c.do(ctx, http.MethodGet, "/services/"+url.PathEscape(service)+"/logs", q, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	err = demux(io.LimitReader(resp.Body, 8<<20), &buf)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+	return sortByTimestamp(buf.String()), err
+}
+
+// sortByTimestamp orders log lines from several tasks chronologically. Each
+// line starts with an RFC 3339 timestamp, which sorts lexically; lines that
+// don't (continuations) stay attached to the line before them.
+func sortByTimestamp(s string) string {
+	lines := strings.SplitAfter(s, "\n")
+	type entry struct{ ts, text string }
+	var entries []entry
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		ts, _, _ := strings.Cut(l, " ")
+		if len(ts) >= 20 && ts[4] == '-' && ts[10] == 'T' {
+			entries = append(entries, entry{ts, l})
+		} else if len(entries) > 0 {
+			entries[len(entries)-1].text += l
+		} else {
+			entries = append(entries, entry{"", l})
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].ts < entries[j].ts })
+	var b strings.Builder
+	for _, e := range entries {
+		b.WriteString(e.text)
+	}
+	return b.String()
+}
+
+// demux decodes Docker's multiplexed stdout/stderr stream format.
+func demux(r io.Reader, w io.Writer) error {
+	hdr := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(r, hdr); err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil
+			}
+			return err
+		}
+		if hdr[0] > 2 || hdr[1] != 0 {
+			// Not multiplexed (TTY service): pass through the rest.
+			w.Write(hdr)
+			_, err := io.Copy(w, r)
+			return err
+		}
+		n := int64(binary.BigEndian.Uint32(hdr[4:]))
+		if _, err := io.CopyN(w, r, n); err != nil {
+			return err
+		}
+	}
+}
