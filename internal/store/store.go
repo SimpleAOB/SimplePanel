@@ -108,6 +108,29 @@ var migrations = []string{
 	ALTER TABLE apps ADD COLUMN build_command TEXT NOT NULL DEFAULT '';
 	ALTER TABLE apps ADD COLUMN output_dir TEXT NOT NULL DEFAULT '';
 	ALTER TABLE apps ADD COLUMN spa INTEGER NOT NULL DEFAULT 0;`,
+	// v4: API tokens for the MCP endpoint, and an audit log of what they did.
+	`CREATE TABLE api_tokens (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		scope TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER
+	);
+	CREATE TABLE audit_log (
+		id INTEGER PRIMARY KEY,
+		token_id INTEGER,
+		token_name TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		args TEXT NOT NULL DEFAULT '',
+		ok INTEGER NOT NULL,
+		error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX audit_log_created ON audit_log(id DESC);
+	ALTER TABLE apps ADD COLUMN ai_access INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE apps ADD COLUMN ai_password TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate() error {

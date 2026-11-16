@@ -76,6 +76,12 @@
       const d = await api.post(`/apps/${aid}/deploy`);
       showDeployment(d.id);
     });
+  let aiMsg = $state('');
+  const toggleAI = () =>
+    action('ai', async () => {
+      const r = await api.put(`/apps/${aid}/ai-access`, { enabled: !detail.aiAccess });
+      aiMsg = r.warning || '';
+    });
   const restart = () => action('restart', () => api.post(`/apps/${aid}/restart`));
   const stop = () => action('stop', () => api.post(`/apps/${aid}/stop`));
   const start = () => action('start', () => api.post(`/apps/${aid}/start`));
@@ -233,6 +239,24 @@
             <small class="faint">Use it as DATABASE_URL in your app's Environment tab. Changing the password variables after the first start does not change the database's password.</small>
           </div>
         </section>
+
+        <section class="card">
+          <div class="row between">
+            <h3>AI read-only access</h3>
+            <span class="pill" class:on={detail.aiAccess}>{detail.aiAccess ? 'On' : 'Off'}</span>
+          </div>
+          <p class="muted">
+            Lets AI assistants connected to SimplePanel look at this database's tables and run read-only queries.
+            They use a separate user that can only read this database's data. Writes are refused, queries stop after 10 seconds,
+            results are capped at 500 rows, and every query is listed under AI activity in Settings. The AI never sees any password.
+          </p>
+          <div class="row end">
+            {#if aiMsg}<span class="muted small">{aiMsg}</span>{/if}
+            <button class="btn {detail.aiAccess ? '' : 'primary'}" disabled={busy === 'ai'} onclick={toggleAI}>
+              {busy === 'ai' ? 'Working…' : detail.aiAccess ? 'Turn off' : 'Allow AI read-only access'}
+            </button>
+          </div>
+        </section>
       {:else}
       <section class="card">
         <h3>Domains</h3>
@@ -383,6 +407,22 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-space-3);
+  }
+  .pill {
+    font-size: var(--sp-text-xs);
+    font-weight: var(--sp-weight-bold);
+    padding: 2px var(--sp-space-2);
+    border-radius: var(--sp-radius-round);
+    background: var(--sp-bg-main);
+    color: var(--sp-text-muted);
+    border: 1px solid var(--sp-border);
+  }
+  .pill.on {
+    color: var(--sp-success);
+    border-color: var(--sp-success);
+  }
+  .small {
+    font-size: var(--sp-text-sm);
   }
   .src {
     display: flex;

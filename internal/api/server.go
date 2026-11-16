@@ -36,15 +36,17 @@ type Server struct {
 	ui      fs.FS
 	version string
 
-	loginLimit *limiter
-	hookLimit  *limiter
+	loginLimit   *limiter
+	hookLimit    *limiter
+	mcpAuthLimit *limiter // failed MCP token attempts per IP
 }
 
 func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *slog.Logger, version string) *Server {
 	return &Server{
 		store: st, docker: dc, deploy: dm, ui: ui, log: log, version: version,
-		loginLimit: newLimiter(10, 5*time.Minute),
-		hookLimit:  newLimiter(30, time.Minute),
+		loginLimit:   newLimiter(10, 5*time.Minute),
+		hookLimit:    newLimiter(30, time.Minute),
+		mcpAuthLimit: newLimiter(20, 10*time.Minute),
 	}
 }
 
@@ -58,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup", s.postSetup)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/hooks/deploy/{token}", s.webhookDeploy)
+	mux.HandleFunc("/mcp", s.mcp) // authenticated with API tokens, see mcp.go
 
 	// Authenticated
 	a := func(pattern string, h func(http.ResponseWriter, *http.Request, *store.User)) {
@@ -68,6 +71,10 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/me/password", s.changePassword)
 	a("GET /api/system", s.system)
 	a("PUT /api/settings", s.putSettings)
+	a("GET /api/tokens", s.listTokens)
+	a("POST /api/tokens", s.createToken)
+	a("DELETE /api/tokens/{id}", s.deleteToken)
+	a("GET /api/audit", s.listAudit)
 
 	a("GET /api/projects", s.listProjects)
 	a("POST /api/projects", s.createProject)
@@ -91,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	a("GET /api/apps/{id}/deployments", s.listDeployments)
 	a("POST /api/apps/{id}/domains", s.createDomain)
 	a("POST /api/apps/{id}/webhook/rotate", s.rotateWebhook)
+	a("PUT /api/apps/{id}/ai-access", s.setAIAccess)
 	a("DELETE /api/domains/{id}", s.deleteDomain)
 	a("GET /api/deployments/{id}", s.getDeployment)
 
@@ -230,6 +238,14 @@ type window struct {
 
 func newLimiter(max int, d time.Duration) *limiter {
 	return &limiter{max: max, window: d, hits: map[string]*window{}}
+}
+
+// Blocked reports whether key is over the limit, without counting a hit.
+func (l *limiter) Blocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, ok := l.hits[key]
+	return ok && time.Since(w.start) <= l.window && w.n >= l.max
 }
 
 func (l *limiter) Allow(key string) bool {

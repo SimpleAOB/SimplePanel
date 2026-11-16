@@ -635,8 +635,8 @@ func (m *Manager) Status(ctx context.Context, app *store.App) Status {
 }
 
 // Logs returns recent log lines for the app.
-func (m *Manager) Logs(ctx context.Context, app *store.App, tail int) (string, error) {
-	return m.docker.ServiceLogs(ctx, app.ServiceName(), tail)
+func (m *Manager) Logs(ctx context.Context, app *store.App, tail int, since int64) (string, error) {
+	return m.docker.ServiceLogs(ctx, app.ServiceName(), tail, since)
 }
 
 // SyncProxy rewrites Traefik's dynamic config from the database.

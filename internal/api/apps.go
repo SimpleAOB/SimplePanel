@@ -424,6 +424,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	}
 	if a.IsDatabase() {
 		out["database"] = deploy.DatabaseInfo(a)
+		out["aiAccess"], _, _ = s.store.AIAccess(r.Context(), a.ID)
 	}
 	writeJSON(w, 200, out)
 }
@@ -519,7 +520,7 @@ func (s *Server) appLogs(w http.ResponseWriter, r *http.Request, _ *store.User) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	logs, err := s.deploy.Logs(ctx, a, tail)
+	logs, err := s.deploy.Logs(ctx, a, tail, 0)
 	if errors.Is(err, docker.ErrNotFound) {
 		writeJSON(w, 200, map[string]string{"logs": ""})
 		return

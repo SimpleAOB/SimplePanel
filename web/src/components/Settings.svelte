@@ -3,8 +3,10 @@
   import { api } from '../lib/api.js';
   import { ui, toggleTheme } from '../lib/state.svelte.js';
   import Topbar from './Topbar.svelte';
+  import ConnectAI from './ConnectAI.svelte';
 
   let panelDomain = $state('');
+  let savedDomain = $state('');
   let domainMsg = $state('');
   let domainErr = $state('');
   let current = $state('');
@@ -14,7 +16,7 @@
 
   onMount(async () => {
     const s = await api.get('/system');
-    panelDomain = s.panelDomain || '';
+    panelDomain = savedDomain = s.panelDomain || '';
   });
 
   async function saveDomain(e) {
@@ -22,6 +24,7 @@
     domainMsg = domainErr = '';
     try {
       await api.put('/settings', { panelDomain });
+      savedDomain = panelDomain;
       domainMsg = panelDomain
         ? `Saved. Once DNS for ${panelDomain} points at this server, open https://${panelDomain}.`
         : 'Saved. The panel is only reachable on port 3000.';
@@ -58,6 +61,8 @@
     {#if domainMsg}<p class="ok">{domainMsg}</p>{/if}
     {#if domainErr}<p class="error">{domainErr}</p>{/if}
   </form>
+
+  <ConnectAI panelDomain={savedDomain} />
 
   <section class="card">
     <h2>Appearance</h2>

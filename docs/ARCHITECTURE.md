@@ -182,6 +182,35 @@ a project, or a service inside an existing project.
   so a bad import changes nothing. Domains already in use are skipped with a
   warning.
 
+### MCP server (AI assistants)
+`/mcp` speaks the MCP Streamable HTTP transport: one JSON-RPC message per
+POST, answered with plain JSON (no SSE stream, no session state).
+- **Auth:** `Authorization: Bearer sp_<64 hex>` API tokens, stored as
+  SHA-256 hashes and shown once. Scopes are `read`, `manage` and `full`;
+  `tools/list` only returns the tools the token's scope allows. Failed
+  token attempts are rate-limited per IP, and requests with a foreign
+  `Origin` are refused (DNS rebinding).
+- **Same rules as the UI:** tools call the API handlers in-process, so
+  validation and side effects are identical. Arguments are strictly
+  decoded (unknown fields are errors) and services can be named
+  `project/name`.
+- **No secrets, at any scope:** env values, DB passwords, Git tokens and
+  webhook URLs are never returned. Tool descriptions tell the AI to ask the
+  user instead.
+- **Audit log:** every changing call and every DB query is stored in
+  `audit_log` with the token name and redacted arguments (env values and
+  tokens replaced), and shown in Settings.
+- **Read-only database access (opt-in per database):** SimplePanel creates
+  `sp_ai_readonly` inside the database. PostgreSQL (15+) gets `CONNECT`,
+  `USAGE` and `SELECT` on non-system schemas plus default privileges for
+  tables the app user creates later; MySQL/MariaDB get `SELECT, SHOW VIEW`
+  on the app's database. Queries run through the database's own client via
+  `docker exec` in its container (no drivers in the panel, and the panel
+  doesn't need to join the project network), in a read-only session with a
+  10 s statement timeout. Plain queries are wrapped as
+  `SELECT * FROM (…) LIMIT 501` and output is capped at 500 rows and 2 MB.
+  The read-only user's password stays in SQLite and is never shown.
+
 ## Security model
 
 - **First-run setup:** the first visitor creates the admin account. Until that
@@ -245,6 +274,7 @@ Dockerfile            builds the SimplePanel image
 
 - More database engines (Redis, MongoDB)
 - Webhook signature verification (HMAC) in addition to the secret URL
+- OAuth for the MCP endpoint (tokens are pasted into the AI app for now)
 - App templates
 - S3-compatible backups of volumes and databases
 - Builds without a Dockerfile (Nixpacks)

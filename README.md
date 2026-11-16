@@ -51,6 +51,9 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 - **Export and import as JSON**: copy or download a whole project or a
   single service, then paste it into any SimplePanel to recreate it.
 - **Logs**: live app logs and build logs side by side.
+- **Connect an AI (MCP)**: a built-in MCP server lets assistants such as
+  Claude Code check on apps, read logs, change settings and deploy (see
+  below).
 - **Advanced view**: replicas, CPU and memory limits, volumes, published
   ports and command overrides, hidden until you need them.
 
@@ -71,6 +74,38 @@ settings. Push events to the app's branch (or the repository's default
 branch) trigger a deploy; other branches and events are ignored.
 
 Treat the URL like a password. Regenerate it from the UI if it leaks.
+
+## Connect an AI (MCP)
+
+SimplePanel has a built-in [MCP](https://modelcontextprotocol.io) server at
+`/mcp`. Create a token in **Settings → Connect an AI**, then for Claude Code:
+
+```sh
+claude mcp add --transport http simplepanel https://panel.example.com/mcp \
+  --header "Authorization: Bearer sp_…"
+```
+
+Other apps (Claude Desktop, Cursor, VS Code…) take the same URL and header;
+Settings shows a ready-made config.
+
+Each token has an access level, and the AI only sees the tools it allows:
+
+| Access    | Tools |
+| --------- | ----- |
+| Read-only | list projects, service details, logs, deployments and build logs, export, database queries (see below) |
+| Manage    | + create projects, apps and databases, change settings and env vars, domains, deploy, restart/stop/start, import |
+| Full      | + delete services and projects |
+
+The AI never sees secrets: environment variable values, database passwords,
+Git tokens and webhook URLs are left out of every answer, so it asks you
+when it needs one. Every change and every database query is listed under
+**AI activity** in Settings.
+
+**Database queries.** On a database's page, **Allow AI read-only access**
+creates a separate database user that can only read that database's data.
+The AI can then list tables, describe them and run queries through it.
+Writes are refused, queries stop after 10 seconds and results are capped at
+500 rows. It is off by default; turning it off deletes the user.
 
 ## Export and import
 

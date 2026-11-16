@@ -449,10 +449,13 @@ type Task struct {
 	ID           string
 	DesiredState string
 	Status       struct {
-		Timestamp time.Time
-		State     string
-		Message   string
-		Err       string
+		Timestamp       time.Time
+		State           string
+		Message         string
+		Err             string
+		ContainerStatus struct {
+			ContainerID string
+		}
 	}
 	Spec struct {
 		ContainerSpec struct{ Image string }
@@ -467,12 +470,16 @@ func (c *Client) ServiceTasks(ctx context.Context, service string) ([]Task, erro
 }
 
 // ServiceLogs returns the last `tail` lines of a service's logs, demultiplexed.
-func (c *Client) ServiceLogs(ctx context.Context, service string, tail int) (string, error) {
+// A non-zero since (Unix seconds) only returns lines logged after it.
+func (c *Client) ServiceLogs(ctx context.Context, service string, tail int, since int64) (string, error) {
 	q := url.Values{
 		"stdout":     {"1"},
 		"stderr":     {"1"},
 		"timestamps": {"1"},
 		"tail":       {strconv.Itoa(tail)},
+	}
+	if since > 0 {
+		q.Set("since", strconv.FormatInt(since, 10))
 	}
 	resp, err := c.do(ctx, http.MethodGet, "/services/"+url.PathEscape(service)+"/logs", q, nil, nil)
 	if err != nil {
@@ -516,6 +523,78 @@ func sortByTimestamp(s string) string {
 }
 
 // demux decodes Docker's multiplexed stdout/stderr stream format.
+// Exec runs cmd in a running container and returns its stdout, stderr and
+// exit code. Output beyond limit bytes per stream is dropped.
+func (c *Client) Exec(ctx context.Context, containerID string, cmd, env []string, limit int64) (stdout, stderr string, code int, err error) {
+	var created struct{ Id string }
+	err = c.doJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(containerID)+"/exec", nil, map[string]any{
+		"AttachStdout": true, "AttachStderr": true, "Cmd": cmd, "Env": env,
+	}, &created)
+	if err != nil {
+		return "", "", -1, err
+	}
+	b, _ := json.Marshal(map[string]bool{"Detach": false, "Tty": false})
+	resp, err := c.do(ctx, http.MethodPost, "/exec/"+created.Id+"/start", nil, bytes.NewReader(b), map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		return "", "", -1, err
+	}
+	var out, errb limitedBuffer
+	out.limit, errb.limit = limit, limit
+	err = demuxSplit(resp.Body, &out, &errb)
+	resp.Body.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return out.String(), errb.String(), -1, err
+	}
+	var info struct {
+		ExitCode int
+		Running  bool
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/exec/"+created.Id+"/json", nil, nil, &info); err != nil {
+		return out.String(), errb.String(), -1, err
+	}
+	return out.String(), errb.String(), info.ExitCode, nil
+}
+
+// limitedBuffer keeps the first limit bytes written and discards the rest,
+// so a huge output can't exhaust memory.
+type limitedBuffer struct {
+	bytes.Buffer
+	limit     int64
+	Truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - int64(b.Len()); room < int64(len(p)) {
+		b.Truncated = true
+		if room > 0 {
+			b.Buffer.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	return b.Buffer.Write(p)
+}
+
+// demuxSplit is demux with stdout and stderr kept apart.
+func demuxSplit(r io.Reader, stdout, stderr io.Writer) error {
+	hdr := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(r, hdr); err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil
+			}
+			return err
+		}
+		w := stdout
+		if hdr[0] == 2 {
+			w = stderr
+		}
+		n := int64(binary.BigEndian.Uint32(hdr[4:]))
+		if _, err := io.CopyN(w, r, n); err != nil {
+			return err
+		}
+	}
+}
+
 func demux(r io.Reader, w io.Writer) error {
 	hdr := make([]byte, 8)
 	for {
