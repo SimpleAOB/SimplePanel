@@ -102,6 +102,12 @@ var migrations = []string{
 	CREATE INDEX deployments_app ON deployments(app_id, id DESC);`,
 	// v2: databases are apps with a non-"app" kind (postgres, mysql, mariadb).
 	`ALTER TABLE apps ADD COLUMN kind TEXT NOT NULL DEFAULT 'app';`,
+	// v3: static site builds for Git apps.
+	`ALTER TABLE apps ADD COLUMN build_type TEXT NOT NULL DEFAULT 'auto';
+	ALTER TABLE apps ADD COLUMN build_image TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN build_command TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN output_dir TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN spa INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate() error {
@@ -334,6 +340,11 @@ type App struct {
 	HasGitToken  bool     `json:"hasGitToken"`
 	BuildPath    string   `json:"buildPath"`
 	Dockerfile   string   `json:"dockerfile"`
+	BuildType    string   `json:"buildType"` // "auto" | "dockerfile" | "static"
+	BuildImage   string   `json:"buildImage"`
+	BuildCommand string   `json:"buildCommand"`
+	OutputDir    string   `json:"outputDir"`
+	SPA          bool     `json:"spa"`
 	Env          string   `json:"env"`
 	Replicas     int      `json:"replicas"`
 	CPULimit     float64  `json:"cpuLimit"`
@@ -355,7 +366,7 @@ func (a *App) IsDatabase() bool { return a.Kind != "" && a.Kind != "app" }
 
 const appCols = `a.id,a.project_id,p.name,a.name,a.kind,a.source,a.image,a.git_url,a.git_branch,a.git_token,
 	a.build_path,a.dockerfile,a.env,a.replicas,a.cpu_limit,a.memory_mb,a.command,a.volumes,a.ports,
-	a.webhook_token,a.created_at,a.updated_at`
+	a.webhook_token,a.created_at,a.updated_at,a.build_type,a.build_image,a.build_command,a.output_dir,a.spa`
 
 type scanner interface{ Scan(...any) error }
 
@@ -364,7 +375,8 @@ func scanApp(r scanner) (*App, error) {
 	var vols, ports string
 	err := r.Scan(&a.ID, &a.ProjectID, &a.ProjectName, &a.Name, &a.Kind, &a.Source, &a.Image, &a.GitURL, &a.GitBranch,
 		&a.GitToken, &a.BuildPath, &a.Dockerfile, &a.Env, &a.Replicas, &a.CPULimit, &a.MemoryMB, &a.Command,
-		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt)
+		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt,
+		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -419,11 +431,16 @@ func (s *Store) CreateApp(ctx context.Context, a *App) error {
 	if a.Kind == "" {
 		a.Kind = "app"
 	}
+	if a.BuildType == "" {
+		a.BuildType = "auto"
+	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO apps(project_id,name,kind,source,image,git_url,git_branch,git_token,
-		build_path,dockerfile,env,replicas,cpu_limit,memory_mb,command,volumes,ports,webhook_token,created_at,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		build_path,dockerfile,env,replicas,cpu_limit,memory_mb,command,volumes,ports,webhook_token,created_at,updated_at,
+		build_type,build_image,build_command,output_dir,spa)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ProjectID, a.Name, a.Kind, a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile,
-		a.Env, a.Replicas, a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.WebhookToken, t, t)
+		a.Env, a.Replicas, a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.WebhookToken, t, t,
+		a.BuildType, a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -438,9 +455,11 @@ func (s *Store) UpdateApp(ctx context.Context, a *App) error {
 	ports, _ := json.Marshal(a.Ports)
 	a.UpdatedAt = now()
 	_, err := s.db.ExecContext(ctx, `UPDATE apps SET source=?,image=?,git_url=?,git_branch=?,git_token=?,build_path=?,
-		dockerfile=?,env=?,replicas=?,cpu_limit=?,memory_mb=?,command=?,volumes=?,ports=?,updated_at=? WHERE id=?`,
+		dockerfile=?,env=?,replicas=?,cpu_limit=?,memory_mb=?,command=?,volumes=?,ports=?,updated_at=?,
+		build_type=?,build_image=?,build_command=?,output_dir=?,spa=? WHERE id=?`,
 		a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile, a.Env, a.Replicas,
-		a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.UpdatedAt, a.ID)
+		a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.UpdatedAt,
+		orAuto(a.BuildType), a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.ID)
 	return mapErr(err)
 }
 
@@ -591,4 +610,11 @@ func (s *Store) FailStaleDeployments(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE deployments SET status='failed', log=log||char(10)||'[interrupted: SimplePanel restarted]'||char(10),
 		finished_at=? WHERE status IN ('queued','running')`, now())
 	return err
+}
+
+func orAuto(s string) string {
+	if s == "" {
+		return "auto"
+	}
+	return s
 }

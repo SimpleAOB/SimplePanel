@@ -34,8 +34,25 @@
     <label class="field">
       <span>Repository URL</span>
       <input type="url" bind:value={value.gitUrl} placeholder="https://github.com/user/repo" required />
-      <small>The repository needs a Dockerfile.</small>
     </label>
+    <div class="field">
+      <span>Build</span>
+      <div class="segmented" role="radiogroup" aria-label="Build type">
+        {#each [['auto', 'Automatic'], ['dockerfile', 'Dockerfile'], ['static', 'Static site']] as [key, label]}
+          <button type="button" role="radio" aria-checked={value.buildType === key} class:active={value.buildType === key} onclick={() => (value.buildType = key)}>{label}</button>
+        {/each}
+      </div>
+      <small>
+        {#if value.buildType === 'auto'}
+          Uses the repository's Dockerfile if it has one, otherwise serves it as a static site.
+        {:else if value.buildType === 'dockerfile'}
+          Builds the Dockerfile in the repository.
+        {:else}
+          Serves HTML, CSS and JS files with a small nginx server on port 80.
+          {#if !ui.advanced}Turn on Advanced view to add a build step (Vite, Astro, Hugo…).{/if}
+        {/if}
+      </small>
+    </div>
     {#if ui.advanced}
       <div class="row">
         <label class="field">
@@ -55,11 +72,34 @@
           <span>Build path</span>
           <input type="text" bind:value={value.buildPath} placeholder="/ (repository root)" />
         </label>
-        <label class="field">
-          <span>Dockerfile</span>
-          <input type="text" bind:value={value.dockerfile} placeholder="Dockerfile" />
-        </label>
+        {#if value.buildType !== 'static'}
+          <label class="field">
+            <span>Dockerfile</span>
+            <input type="text" bind:value={value.dockerfile} placeholder="Dockerfile" />
+          </label>
+        {/if}
       </div>
+      {#if value.buildType !== 'dockerfile'}
+        <div class="static card">
+          <h3 class="sub-title">Static site build {#if value.buildType === 'auto'}<span class="faint">(used when there's no Dockerfile)</span>{/if}</h3>
+          <div class="row">
+            <label class="field">
+              <span>Build command</span>
+              <input type="text" bind:value={value.buildCommand} placeholder="none: serve files as they are" class="mono" />
+            </label>
+            <label class="field">
+              <span>Output directory</span>
+              <input type="text" bind:value={value.outputDir} placeholder={value.buildCommand ? 'e.g. dist' : '/ (build path)'} />
+            </label>
+          </div>
+          <label class="field">
+            <span>Build image</span>
+            <input type="text" bind:value={value.buildImage} placeholder="node:22-alpine" />
+            <small>Runs the build command. Node dependencies install automatically. For Hugo use e.g. hugomods/hugo:exts with <code>hugo --minify</code> and output <code>public</code>.</small>
+          </label>
+          <label class="check"><input type="checkbox" bind:checked={value.spa} /> Single-page app: send unknown paths to index.html</label>
+        </div>
+      {/if}
     {/if}
   {/if}
 
@@ -141,6 +181,15 @@
   .row.tight input,
   .row.tight select {
     flex: 1 1 0;
+  }
+  .static {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-space-3);
+    background: var(--sp-bg-main);
+  }
+  .sub-title {
+    font-size: var(--sp-text-sm);
   }
   .check {
     display: flex;

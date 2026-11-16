@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -159,6 +160,11 @@ type appInput struct {
 	ClearGitToken bool           `json:"clearGitToken"`
 	BuildPath     string         `json:"buildPath"`
 	Dockerfile    string         `json:"dockerfile"`
+	BuildType     string         `json:"buildType"`
+	BuildImage    string         `json:"buildImage"`
+	BuildCommand  string         `json:"buildCommand"`
+	OutputDir     string         `json:"outputDir"`
+	SPA           bool           `json:"spa"`
 	Env           string         `json:"env"`
 	Replicas      *int           `json:"replicas"`
 	CPULimit      float64        `json:"cpuLimit"`
@@ -198,6 +204,28 @@ func (in *appInput) apply(a *store.App) error {
 			return fmt.Errorf("dockerfile: %w", err)
 		}
 		a.GitURL, a.GitBranch, a.BuildPath, a.Dockerfile = in.GitURL, strings.TrimSpace(in.GitBranch), bp, df
+		bt := strings.TrimSpace(in.BuildType)
+		if bt == "" {
+			bt = "auto"
+		}
+		if !slices.Contains(deploy.BuildTypes, bt) {
+			return errors.New(`build type must be "auto", "dockerfile" or "static"`)
+		}
+		img := strings.TrimSpace(in.BuildImage)
+		if img != "" {
+			if err := deploy.ValidImage(img); err != nil {
+				return fmt.Errorf("build image: %w", err)
+			}
+		}
+		cmd := strings.TrimSpace(in.BuildCommand)
+		if len(cmd) > 1000 || strings.ContainsAny(cmd, "\x00\r\n") {
+			return errors.New("build command must be a single line under 1000 characters")
+		}
+		out, err := deploy.CleanRelPath(strings.TrimSpace(in.OutputDir))
+		if err != nil {
+			return fmt.Errorf("output directory: %w", err)
+		}
+		a.BuildType, a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA = bt, img, cmd, out, in.SPA
 		if in.ClearGitToken {
 			a.GitToken = ""
 		} else if t := strings.TrimSpace(in.GitToken); t != "" {

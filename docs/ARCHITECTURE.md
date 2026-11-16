@@ -125,8 +125,25 @@ Everything, SimplePanel included, runs as a Docker Swarm service.
 4. Each app gets a secret **deploy webhook URL** so a push to GitHub/GitLab can
    trigger a redeploy.
 
-v0.1 requires a `Dockerfile` in the repo. Automatic builds without a
-Dockerfile (Nixpacks or buildpacks) are planned.
+Build type is **Automatic** (default), **Dockerfile** or **Static site**.
+Automatic uses the Dockerfile when the repo has one and a static site build
+otherwise.
+
+**Static sites**: SimplePanel generates a two-stage Dockerfile
+(`internal/deploy/static.go`). The first stage copies the repo into a
+builder image (`node:22-alpine` by default, configurable, e.g. a Hugo
+image), installs Node dependencies when there is a `package.json`
+(npm/pnpm/yarn by lockfile) and runs the optional build command. The second
+stage is `nginx:stable-alpine` serving the output directory on port 80 with
+no directory listings, dotfiles blocked (except `.well-known`), asset cache
+headers, gzip and an optional single-page-app fallback to `index.html`.
+
+Base images are refreshed on every build for security updates. If the
+registry refuses (for example a Docker Hub rate limit), the build is retried
+with the images already on the server.
+
+Automatic builds for server apps without a Dockerfile (Nixpacks or
+buildpacks) are planned.
 
 ### Databases (PostgreSQL, MySQL, MariaDB)
 1. User picks an engine and a name. SimplePanel generates a user, a random

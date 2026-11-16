@@ -221,17 +221,54 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 	if app.BuildPath != "" {
 		ctxDir = filepath.Join(repo, filepath.FromSlash(app.BuildPath))
 	}
+	if fi, err := os.Stat(ctxDir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("build path %s does not exist in the repository", app.BuildPath)
+	}
 	dockerfile := orDefault(app.Dockerfile, "Dockerfile")
-	if fi, err := os.Lstat(filepath.Join(ctxDir, filepath.FromSlash(dockerfile))); err != nil || !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("no %s found in %s. SimplePanel v0.1 needs a Dockerfile in the repository", dockerfile, orDefault(app.BuildPath, "the repository root"))
+	switch ResolveBuildType(app.BuildType, ctxDir, app.Dockerfile) {
+	case "dockerfile":
+		if fi, err := os.Lstat(filepath.Join(ctxDir, filepath.FromSlash(dockerfile))); err != nil || !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("no %s found in %s; add one, or set the build type to Static site", dockerfile, orDefault(app.BuildPath, "the repository root"))
+		}
+		lb.Printf("Building with %s", dockerfile)
+	case "static":
+		if app.BuildType == "auto" || app.BuildType == "" {
+			lb.Printf("No %s found: building a static site", dockerfile)
+		}
+		name, _, err := WriteStaticDockerfile(ctxDir, StaticOptions{
+			BuildImage: app.BuildImage, Command: app.BuildCommand, OutputDir: app.OutputDir, SPA: app.SPA,
+		})
+		if err != nil {
+			return "", err
+		}
+		if app.BuildCommand != "" {
+			lb.Printf("Static site: running %q in %s, serving %s/", app.BuildCommand, orDefault(app.BuildImage, DefaultStaticBuildImage), orDefault(app.OutputDir, "."))
+		} else {
+			lb.Printf("Static site: serving %s/ as-is", orDefault(app.OutputDir, "."))
+		}
+		if app.SPA {
+			lb.Printf("Single-page app fallback: unknown paths serve index.html")
+		}
+		dockerfile = name
 	}
 
 	tag := fmt.Sprintf("simplepanel/%s:%d", app.ServiceName(), depID)
 	lb.Printf("Building image %s", tag)
-	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(tarDir(ctxDir, pw)) }()
-	err = m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile}, lb)
-	pr.Close()
+	build := func(noPull bool) error {
+		pr, pw := io.Pipe()
+		go func() { pw.CloseWithError(tarDir(ctxDir, pw)) }()
+		err := m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile, NoPull: noPull}, lb)
+		pr.Close()
+		return err
+	}
+	err = build(false)
+	if err != nil && isRegistryPullError(err) {
+		// Base images are refreshed on every build for security updates.
+		// If the registry refuses (e.g. Docker Hub rate limits), fall back
+		// to the base images already on this server.
+		lb.Printf("Could not refresh base images (%v); retrying with the cached ones", err)
+		err = build(true)
+	}
 	if err != nil {
 		return "", fmt.Errorf("build: %w", err)
 	}
@@ -660,4 +697,16 @@ func SplitCommand(s string) ([]string, error) {
 		out = append(out, cur.String())
 	}
 	return out, nil
+}
+
+// isRegistryPullError reports errors caused by the registry rather than the
+// build itself, such as rate limits or an unreachable registry.
+func isRegistryPullError(err error) bool {
+	msg := err.Error()
+	for _, s := range []string{"Too Many Requests", "toomanyrequests", "failed to resolve reference", "pull access denied", "i/o timeout", "no such host"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

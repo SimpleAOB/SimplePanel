@@ -254,11 +254,15 @@ type BuildOptions struct {
 	Tag        string
 	Dockerfile string
 	BuildArgs  map[string]string
+	NoPull     bool // use cached base images instead of refreshing them
 }
 
 // ImageBuild builds an image from a tar build context.
 func (c *Client) ImageBuild(ctx context.Context, tarCtx io.Reader, opt BuildOptions, w io.Writer) error {
 	q := url.Values{"t": {opt.Tag}, "rm": {"1"}, "forcerm": {"1"}, "pull": {"1"}}
+	if opt.NoPull {
+		q.Del("pull")
+	}
 	if opt.Dockerfile != "" {
 		q.Set("dockerfile", opt.Dockerfile)
 	}

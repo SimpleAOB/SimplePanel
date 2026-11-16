@@ -32,9 +32,15 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 
 ## What you can do in v0.1
 
-- **Deploy from Git**: any public or private (token) HTTPS repository with a
-  `Dockerfile`. Pick a branch, a build path and a Dockerfile path in the
-  advanced view.
+- **Deploy from Git**: any public or private (token) HTTPS repository. With
+  a `Dockerfile` it is built as-is; without one it is served as a **static
+  site**. Pick a branch, a build path and a Dockerfile path in the advanced
+  view.
+- **Static sites**: plain HTML repos work with no setup. For site generators
+  (Vite, Astro, Hugo…) set a build command and output directory, e.g.
+  `npm run build` → `dist`, and turn on the single-page-app fallback if
+  needed. Files are served by nginx with dotfiles hidden and no directory
+  listings.
 - **Deploy a Docker image** from Docker Hub, GHCR or any registry.
 - **Domains with automatic HTTPS** via Let's Encrypt.
 - **Databases**: PostgreSQL, MySQL and MariaDB with generated credentials, a

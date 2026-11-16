@@ -39,7 +39,7 @@
     {#if apps.length === 0}
       <div class="card empty">
         <h2>Add your first app</h2>
-        <p class="muted">Deploy from a Git repository with a Dockerfile, run any Docker image, or create a Postgres or MySQL database.</p>
+        <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres or MySQL database.</p>
         <div><button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button></div>
       </div>
     {:else}

@@ -57,6 +57,11 @@ type exportGit struct {
 	Branch     string `json:"branch,omitempty"`
 	BuildPath  string `json:"buildPath,omitempty"`
 	Dockerfile string `json:"dockerfile,omitempty"`
+	BuildType  string `json:"buildType,omitempty"`
+	BuildImage string `json:"buildImage,omitempty"`
+	BuildCmd   string `json:"buildCommand,omitempty"`
+	OutputDir  string `json:"outputDir,omitempty"`
+	SPA        bool   `json:"spa,omitempty"`
 }
 
 type exportDomain struct {
@@ -83,7 +88,11 @@ func (s *Server) exportService(r *http.Request, a *store.App, withEnv bool) (exp
 	es.Volumes = a.Volumes
 	if a.Source == "git" {
 		es.Image = ""
-		es.Git = &exportGit{URL: a.GitURL, Branch: a.GitBranch, BuildPath: a.BuildPath, Dockerfile: a.Dockerfile}
+		es.Git = &exportGit{URL: a.GitURL, Branch: a.GitBranch, BuildPath: a.BuildPath, Dockerfile: a.Dockerfile,
+			BuildImage: a.BuildImage, BuildCmd: a.BuildCommand, OutputDir: a.OutputDir, SPA: a.SPA}
+		if a.BuildType != "auto" {
+			es.Git.BuildType = a.BuildType
+		}
 		es.GitPrivate = a.GitToken != ""
 	}
 	if withEnv && a.Env != "" {
@@ -263,6 +272,7 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 			return fail(errors.New(`"git" is only allowed when source is "git"`))
 		}
 		in.GitURL, in.GitBranch, in.BuildPath, in.Dockerfile = es.Git.URL, es.Git.Branch, es.Git.BuildPath, es.Git.Dockerfile
+		in.BuildType, in.BuildImage, in.BuildCommand, in.OutputDir, in.SPA = es.Git.BuildType, es.Git.BuildImage, es.Git.BuildCmd, es.Git.OutputDir, es.Git.SPA
 	}
 	a = &store.App{ProjectID: projectID, ProjectName: projectName, Name: name, Kind: "app"}
 	if err := in.apply(a); err != nil {
