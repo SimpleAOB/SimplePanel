@@ -103,7 +103,8 @@ pre,
   gap: var(--sp-space-1);
   min-width: 0;
 }
-.field > span {
+.field > span,
+.field > .label-row > span {
   font-size: var(--sp-text-xs);
   font-weight: var(--sp-weight-bold);
   text-transform: uppercase;

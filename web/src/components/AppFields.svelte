@@ -1,9 +1,21 @@
 <script>
   // Source + runtime fields for an app. `value` is a plain object bound
   // by the parent. Advanced fields only show when Advanced view is on.
-  import { ui } from '../lib/state.svelte.js';
+  import { ui, setAdvanced } from '../lib/state.svelte.js';
+  import { applyStaticPreset } from '../lib/staticpresets.js';
+  import Icon from './Icon.svelte';
+  import StaticSiteHelp from './StaticSiteHelp.svelte';
 
   let { value = $bindable(), hasToken = false, showRuntime = true, database = false } = $props();
+
+  let helpOpen = $state(false);
+
+  // Fill the build fields from a preset, and show them so the user can check.
+  function usePreset(preset) {
+    applyStaticPreset(value, preset);
+    setAdvanced(true);
+    helpOpen = false;
+  }
 
   function addVolume() {
     value.volumes = [...value.volumes, { name: '', path: '' }];
@@ -36,7 +48,14 @@
       <input type="url" bind:value={value.gitUrl} placeholder="https://github.com/user/repo" required />
     </label>
     <div class="field">
-      <span>Build</span>
+      <div class="label-row">
+        <span>Build</span>
+        {#if value.buildType !== 'dockerfile'}
+          <button type="button" class="help-link" onclick={() => (helpOpen = true)}>
+            <Icon name="help" size={14} /> How to set up a static site
+          </button>
+        {/if}
+      </div>
       <div class="segmented" role="radiogroup" aria-label="Build type">
         {#each [['auto', 'Automatic'], ['dockerfile', 'Dockerfile'], ['static', 'Static site']] as [key, label]}
           <button type="button" role="radio" aria-checked={value.buildType === key} class:active={value.buildType === key} onclick={() => (value.buildType = key)}>{label}</button>
@@ -49,7 +68,7 @@
           Builds the Dockerfile in the repository.
         {:else}
           Serves HTML, CSS and JS files with a small nginx server on port 80.
-          {#if !ui.advanced}Turn on Advanced view to add a build step (Vite, Astro, Hugo…).{/if}
+          {#if !ui.advanced}Using Vite, Astro, Hugo or similar? <button type="button" class="inline-link" onclick={() => (helpOpen = true)}>Pick your tool</button> to add a build step.{/if}
         {/if}
       </small>
     </div>
@@ -158,6 +177,10 @@
   {/if}
 </div>
 
+{#if helpOpen}
+  <StaticSiteHelp onapply={usePreset} onclose={() => (helpOpen = false)} />
+{/if}
+
 <style>
   .fields {
     display: flex;
@@ -166,6 +189,35 @@
   }
   .segmented {
     align-self: flex-start;
+  }
+  .label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--sp-space-3);
+    flex-wrap: wrap;
+  }
+  .help-link,
+  .inline-link {
+    border: 0;
+    padding: 0;
+    background: none;
+    color: var(--sp-accent);
+    font: inherit;
+    font-size: var(--sp-text-sm);
+    cursor: pointer;
+  }
+  .inline-link {
+    font-size: inherit;
+  }
+  .help-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-space-1);
+  }
+  .help-link:hover,
+  .inline-link:hover {
+    text-decoration: underline;
   }
   .sub {
     margin-top: var(--sp-space-2);
