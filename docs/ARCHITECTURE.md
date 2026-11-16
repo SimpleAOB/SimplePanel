@@ -151,6 +151,20 @@ which can be regenerated from the UI.
   branch) deploy; other events are acknowledged and ignored.
 - Webhook calls are rate-limited per IP.
 
+### Export and import
+`GET /api/projects/{id}/export` and `GET /api/apps/{id}/export` return a
+versioned JSON document (`"simplepanel": 1`). `POST /api/import` recreates
+a project, or a service inside an existing project.
+- **No secrets out:** Git tokens, webhook tokens and database credentials
+  are never exported. App env vars are included only with `?env=1`.
+- **No secrets in:** imported database credential variables are dropped and
+  regenerated; services from private repos must get a token again.
+- **Strict validation:** unknown fields, trailing data and unsupported
+  versions are rejected, every service goes through the same validation as
+  the UI, and the whole document is validated before anything is created,
+  so a bad import changes nothing. Domains already in use are skipped with a
+  warning.
+
 ## Security model
 
 - **First-run setup:** the first visitor creates the admin account. Until that

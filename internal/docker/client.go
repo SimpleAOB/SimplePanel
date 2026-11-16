@@ -292,9 +292,11 @@ func (c *Client) NetworkEnsure(ctx context.Context, name string, labels map[stri
 	}
 	body := map[string]any{"Name": name, "Driver": "overlay", "Attachable": false, "Labels": labels}
 	err = c.doJSON(ctx, http.MethodPost, "/networks/create", nil, body, nil)
-	var ae *APIError
-	if errors.As(err, &ae) && ae.Status == http.StatusConflict {
-		return nil
+	if err != nil {
+		// Another caller may have created it concurrently.
+		if ok, _ := c.NetworkExists(ctx, name); ok {
+			return nil
+		}
 	}
 	return err
 }

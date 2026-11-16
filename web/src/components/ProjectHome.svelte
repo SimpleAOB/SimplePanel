@@ -4,6 +4,10 @@
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import ExportDialog from './ExportDialog.svelte';
+  import ImportDialog from './ImportDialog.svelte';
+
+  let dialog = $state(''); // '' | 'export' | 'import'
 
   let project = $derived(data.projects.find((p) => p.id === ui.route.projectId));
   let apps = $derived(data.appsFor === ui.route.projectId ? data.apps : []);
@@ -26,7 +30,9 @@
   <Topbar>
     {project.name}
     {#snippet actions()}
-      <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}><Icon name="plus" size={16} /> New app</button>
+      <button class="btn hide-sm" onclick={() => (dialog = 'import')}>Import</button>
+      <button class="btn hide-sm" onclick={() => (dialog = 'export')}>Export</button>
+      <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}><Icon name="plus" size={16} /> New</button>
     {/snippet}
   </Topbar>
   <div class="page">
@@ -53,6 +59,17 @@
       </div>
     {/if}
 
+    <section class="card transfer">
+      <div>
+        <h3>Export and import</h3>
+        <p class="muted">Copy this project as JSON to recreate it elsewhere, or paste a service exported from another project.</p>
+      </div>
+      <div class="row">
+        <button class="btn" onclick={() => (dialog = 'export')}>Export project</button>
+        <button class="btn" onclick={() => (dialog = 'import')}>Import service</button>
+      </div>
+    </section>
+
     {#if ui.advanced}
       <section class="card danger-zone">
         <h3>Delete project</h3>
@@ -68,6 +85,11 @@
       </section>
     {/if}
   </div>
+  {#if dialog === 'export'}
+    <ExportDialog title="Export {project.name}" path="/projects/{project.id}/export" filename={project.name} onclose={() => (dialog = '')} />
+  {:else if dialog === 'import'}
+    <ImportDialog projectId={project.id} onclose={() => (dialog = '')} />
+  {/if}
 {:else}
   <Topbar>Project</Topbar>
   <p class="page muted">Project not found.</p>
@@ -119,6 +141,16 @@
     flex-direction: column;
     gap: var(--sp-space-3);
     padding: var(--sp-space-6);
+  }
+  @media (max-width: 560px) {
+    :global(.hide-sm) {
+      display: none !important;
+    }
+  }
+  .transfer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-space-3);
   }
   .danger-zone {
     display: flex;

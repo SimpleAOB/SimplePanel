@@ -76,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/projects/{id}/apps", s.createApp)
 	a("POST /api/projects/{id}/databases", s.createDatabase)
 	a("GET /api/engines", s.listEngines)
+	a("GET /api/projects/{id}/export", s.exportProjectHandler)
+	a("GET /api/apps/{id}/export", s.exportAppHandler)
+	a("POST /api/import", s.importHandler)
 
 	a("GET /api/apps/{id}", s.getApp)
 	a("PUT /api/apps/{id}", s.updateApp)

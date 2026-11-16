@@ -42,6 +42,8 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
   reachable from apps in the same project.
 - **Zero-downtime deploys**: new containers start before old ones stop.
 - **Deploy webhooks** for CI/CD (see below).
+- **Export and import as JSON**: copy or download a whole project or a
+  single service, then paste it into any SimplePanel to recreate it.
 - **Logs**: live app logs and build logs side by side.
 - **Advanced view**: replicas, CPU and memory limits, volumes, published
   ports and command overrides, hidden until you need them.
@@ -63,6 +65,18 @@ settings. Push events to the app's branch (or the repository's default
 branch) trigger a deploy; other branches and events are ignored.
 
 Treat the URL like a password. Regenerate it from the UI if it leaks.
+
+## Export and import
+
+Use **Export** on a project page (or **Export as JSON** in a service's
+Settings tab) to get a JSON document you can copy or download. Paste it into
+**Import project** on the Overview page, or **Import** on a project page for
+a single service. You can rename it on the way in and deploy it right away.
+
+Exports never contain secrets: Git access tokens, webhook URLs and database
+passwords are left out and regenerated on import. App environment variables
+are only included if you tick the box, because they often hold API keys.
+Database contents are not exported.
 
 ## Development
 

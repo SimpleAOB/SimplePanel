@@ -108,3 +108,26 @@ func DatabaseInfo(a *store.App) *DBInfo {
 // and databases. Databases are attached only to this network, so they are
 // unreachable from other projects and from the proxy.
 func ProjectNetwork(project string) string { return "sp_" + project }
+
+// IsCredentialVar reports whether an environment variable holds a
+// credential that SimplePanel generates for this engine.
+func (e *Engine) IsCredentialVar(key string) bool {
+	switch key {
+	case e.userVar, e.passVar, e.dbVar, e.rootVar:
+		return key != ""
+	}
+	return false
+}
+
+// StripCredentials removes generated credential variables from env text.
+func (e *Engine) StripCredentials(env string) string {
+	var keep []string
+	for _, line := range strings.Split(env, "\n") {
+		k, _, ok := strings.Cut(line, "=")
+		if ok && e.IsCredentialVar(strings.TrimSpace(k)) {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimLeft(strings.Join(keep, "\n"), "\n")
+}

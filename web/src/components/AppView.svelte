@@ -7,6 +7,9 @@
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import AppFields from './AppFields.svelte';
+  import ExportDialog from './ExportDialog.svelte';
+
+  let exporting = $state(false);
 
   let detail = $state(null);
   let deployments = $state([]);
@@ -319,8 +322,17 @@
         </div>
       </form>
 
+      <section class="card">
+        <h3>Export</h3>
+        <p class="muted">Copy this {isDb ? 'database' : 'app'}'s configuration as JSON to recreate it in another project or on another server.</p>
+        <div><button class="btn" onclick={() => (exporting = true)}>Export as JSON</button></div>
+      </section>
+      {#if exporting}
+        <ExportDialog title="Export {detail.app.name}" path="/apps/{aid}/export" filename={detail.app.name} onclose={() => (exporting = false)} />
+      {/if}
+
       <section class="card danger-zone">
-        <h3>Delete app</h3>
+        <h3>Delete {isDb ? 'database' : 'app'}</h3>
         <p class="muted">{isDb ? 'Stops the database. Its data volume is kept on the server.' : 'Stops the app and removes its domains. Volumes are kept.'}</p>
         <div class="row">
           <label class="field">

@@ -3,6 +3,9 @@
   import { api } from '../lib/api.js';
   import { data, go, initials } from '../lib/state.svelte.js';
   import Topbar from './Topbar.svelte';
+  import ImportDialog from './ImportDialog.svelte';
+
+  let importing = $state(false);
 
   let sys = $state(null);
   onMount(async () => {
@@ -14,7 +17,13 @@
   });
 </script>
 
-<Topbar>Overview</Topbar>
+<Topbar>
+  Overview
+  {#snippet actions()}
+    <button class="btn" onclick={() => (importing = true)}>Import project</button>
+  {/snippet}
+</Topbar>
+{#if importing}<ImportDialog onclose={() => (importing = false)} />{/if}
 <div class="page">
   <section class="hero">
     <h1>Welcome to SimplePanel</h1>
@@ -38,7 +47,7 @@
     {#if data.projects.length === 0}
       <div class="card empty">
         <p>You don't have any projects yet.</p>
-        <p class="muted">Click the <strong>+</strong> in the left rail to create one, then add your first app.</p>
+        <p class="muted">Click the <strong>+</strong> in the left rail to create one, then add your first app. Have an export from another server? Use <strong>Import project</strong>.</p>
       </div>
     {:else}
       <div class="grid">

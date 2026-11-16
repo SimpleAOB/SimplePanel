@@ -47,6 +47,7 @@ type Manager struct {
 	appLocks map[int64]*sync.Mutex
 	builds   chan struct{} // limits concurrent builds
 	proxyMu  sync.Mutex
+	netMu    sync.Mutex // serialises project network creation
 }
 
 func NewManager(cfg Config, st *store.Store, dc *docker.Client, log *slog.Logger) *Manager {
@@ -417,9 +418,12 @@ func (m *Manager) applyService(ctx context.Context, app *store.App, image string
 	if err != nil {
 		return err
 	}
-	if err := m.docker.NetworkEnsure(ctx, ProjectNetwork(app.ProjectName), map[string]string{
+	m.netMu.Lock()
+	err = m.docker.NetworkEnsure(ctx, ProjectNetwork(app.ProjectName), map[string]string{
 		"simplepanel.managed": "true", "simplepanel.project": app.ProjectName,
-	}); err != nil {
+	})
+	m.netMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("create project network: %w", err)
 	}
 	existing, err := m.docker.ServiceInspect(ctx, spec.Name)
