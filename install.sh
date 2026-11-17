@@ -7,14 +7,17 @@
 # and Traefik as Swarm services. Re-running the script upgrades SimplePanel.
 #
 # Optional environment variables:
-#   SP_IMAGE        SimplePanel image   (default ghcr.io/simpleaob/simplepanel:latest)
+#   SP_IMAGE        SimplePanel image   (default: the latest release,
+#                   ghcr.io/simpleaob/simplepanel:latest, or :edge, built
+#                   from main, until the first release is published)
 #   TRAEFIK_IMAGE   Traefik image       (default traefik:v3.6)
 #   ACME_EMAIL      email for Let's Encrypt expiry notices (optional)
 #   SP_PORT         port for the panel  (default 3000)
 
 set -eu
 
-SP_IMAGE="${SP_IMAGE:-ghcr.io/simpleaob/simplepanel:latest}"
+SP_REPO=ghcr.io/simpleaob/simplepanel
+SP_IMAGE="${SP_IMAGE:-}"
 TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.6}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 SP_PORT="${SP_PORT:-3000}"
@@ -69,18 +72,84 @@ fi
 
 docker info >/dev/null 2>&1 || die "Docker is installed but not running (try: systemctl start docker)"
 
-if docker service inspect simplepanel >/dev/null 2>&1; then
+has_service() { docker service inspect "$1" >/dev/null 2>&1; }
+
+if has_service simplepanel; then
 	existing_install=true
 fi
 
-# Ports must be free on a fresh install (an upgrade already owns them).
-if [ "$existing_install" = false ] && need ss; then
-	for p in 80 443 "$SP_PORT"; do
-		if ss -ltnH "sport = :$p" 2>/dev/null | grep -q .; then
-			die "port $p is already in use; stop the service using it (for example nginx or apache) and re-run"
+# Ports must be free, except those held by SimplePanel's own services: an
+# upgrade, or a re-run after an install that stopped half way, already
+# owns them.
+check_port() {
+	if need ss && ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; then
+		die "port $1 is already in use; stop the service using it (for example nginx or apache) and re-run"
+	fi
+}
+if ! has_service simplepanel-traefik; then
+	check_port 80
+	check_port 443
+fi
+if ! has_service simplepanel; then
+	check_port "$SP_PORT"
+fi
+
+# ---- Images ------------------------------------------------------------------
+# Pull everything before changing anything, so a failed download leaves the
+# server as it was.
+
+# pull IMAGE: pull, or fall back to a local copy. Sets pull_error on failure.
+pull_error=
+pull() {
+	if out=$(docker pull --quiet "$1" 2>&1); then
+		return 0
+	fi
+	pull_error=$out
+	if docker image inspect "$1" >/dev/null 2>&1; then
+		warn "could not pull $1; using the copy already on this server"
+		return 0
+	fi
+	return 1
+}
+
+explain_pull_error() {
+	printf '%s\n' "$pull_error" | tail -n 3 >&2
+	case "$pull_error" in
+	*unauthorized* | *denied* | *"authentication required"*)
+		die "the registry refused to send $1.
+  The image is private, or the tag doesn't exist yet. If you published it
+  yourself, make the package public on GitHub (Packages > simplepanel >
+  Package settings > Change visibility), or run 'docker login ghcr.io' first." ;;
+	*"not found"* | *"manifest unknown"*)
+		die "$1 doesn't exist. Check SP_IMAGE." ;;
+	*)
+		die "could not pull $1. Check the server's internet connection and re-run." ;;
+	esac
+}
+
+if [ -n "$SP_IMAGE" ]; then
+	info "Pulling $SP_IMAGE"
+	pull "$SP_IMAGE" || explain_pull_error "$SP_IMAGE"
+else
+	# Prefer the latest release; until the first one exists, use the build of
+	# main (:edge). An install that already runs :edge stays on it.
+	current=$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' simplepanel 2>/dev/null || true)
+	case "${current%%@*}" in
+	*:edge) candidates="$SP_REPO:edge" ;;
+	*) candidates="$SP_REPO:latest $SP_REPO:edge" ;;
+	esac
+	for c in $candidates; do
+		info "Pulling $c"
+		if pull "$c"; then
+			SP_IMAGE=$c
+			break
 		fi
 	done
+	[ -n "$SP_IMAGE" ] || explain_pull_error "$SP_REPO"
 fi
+
+info "Pulling $TRAEFIK_IMAGE"
+pull "$TRAEFIK_IMAGE" || explain_pull_error "$TRAEFIK_IMAGE"
 
 # ---- Swarm -------------------------------------------------------------------
 
@@ -158,12 +227,6 @@ else
 fi
 
 # ---- SimplePanel -------------------------------------------------------------
-
-info "Pulling $SP_IMAGE"
-if ! docker pull --quiet "$SP_IMAGE" >/dev/null; then
-	docker image inspect "$SP_IMAGE" >/dev/null 2>&1 || die "could not pull $SP_IMAGE"
-	warn "pull failed; using the local copy of $SP_IMAGE"
-fi
 
 if [ "$existing_install" = true ]; then
 	info "Upgrading SimplePanel"

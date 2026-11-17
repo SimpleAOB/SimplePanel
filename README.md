@@ -18,12 +18,13 @@ curl -fsSL https://raw.githubusercontent.com/SimpleAOB/SimplePanel/main/install.
 Then open `http://<your-server-ip>:3000` and create the admin account. Do it
 straight away: the first visitor claims the server.
 
-The installer sets up Docker, Docker Swarm, Traefik and SimplePanel. Run it
-again at any time to upgrade.
+The installer sets up Docker, Docker Swarm, Traefik and SimplePanel. It
+downloads everything before changing the server, and it is safe to run
+again: to upgrade, or to finish an install that stopped part way.
 
 | Variable        | Default                                  | Purpose                                   |
 | --------------- | ---------------------------------------- | ----------------------------------------- |
-| `SP_IMAGE`      | `ghcr.io/simpleaob/simplepanel:latest`   | SimplePanel image to run                  |
+| `SP_IMAGE`      | latest release, else `:edge` (main)      | SimplePanel image to run                  |
 | `TRAEFIK_IMAGE` | `traefik:v3.6`                           | Traefik image                             |
 | `ACME_EMAIL`    | _(none)_                                 | Email for Let's Encrypt expiry notices    |
 | `SP_PORT`       | `3000`                                   | Port the panel listens on                 |
