@@ -526,6 +526,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 		"serviceName": a.ServiceName(),
 		"level":       lvl,
 		"autoHost":    deploy.AutoHost(a, wd),
+		"wildcard":    wd != "" && !a.IsDatabase(),
 		"autoPort":    s.deploy.AutoPort(r.Context(), a),
 		"backupKind":  deploy.BackupKind(a),
 	}

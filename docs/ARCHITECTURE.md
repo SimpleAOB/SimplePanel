@@ -1,4 +1,4 @@
-# SimplePanel architecture (v0.1)
+# SimplePanel architecture (v0.2)
 
 SimplePanel is a free, self-hosted server control panel: point it at a fresh VPS,
 run one command, then deploy apps from a Git repository or a Docker image with
@@ -211,6 +211,72 @@ POST, answered with plain JSON (no SSE stream, no session state).
   `SELECT * FROM (…) LIMIT 501` and output is capped at 500 rows and 2 MB.
   The read-only user's password stays in SQLite and is never shown.
 
+## v0.2 additions
+
+### Users, roles and access
+
+Users have a role: `owner` (the first account), `admin`, `developer` or
+`viewer`. Admins see every project. Developers and viewers have
+`all_projects` and/or per-project overrides in `project_access`. Each
+request works out an access level for a project: View (1), Deploy (2:
+create, configure, deploy, back up, restore into a new database) or Manage
+(3: delete, restore over current data). The level is the lowest of the
+user's role and, for API tokens, the token's scope (read = View,
+manage = Deploy, full = Manage). Projects a user can't see answer 404.
+Server settings, users, backup destinations and notification channels are
+admin-only. Invite and password-reset links are one-time tokens valid for
+seven days (`/#/invite/<token>`); only a SHA-256 of the token is stored.
+Every change from the UI and from MCP tokens goes to `audit_log` with the
+user.
+
+### Backups
+
+`internal/s3` is a small S3 client (SigV4, path-style or virtual-host
+addressing, multipart uploads above 64 MB) with no SDK dependency.
+`internal/backup` runs jobs:
+
+- **Databases** are dumped with the engine's own tool inside the database
+  container (`docker exec`): `pg_dump --clean --if-exists --no-owner`, or
+  `mysqldump`/`mariadb-dump --single-transaction`. Restores pipe the dump
+  back in the same way.
+- **App volumes** are archived by a short-lived helper container
+  (`alpine`, no network) that mounts the volumes read-only. Restoring
+  scales the app to 0, replaces the volume contents and scales it back.
+- **SimplePanel's config** is a `VACUUM INTO` snapshot of its SQLite file.
+
+The stream is gzipped, optionally encrypted with age (scrypt passphrase per
+destination) and uploaded as
+`<folder>/<project>/<service>/YYYYMMDD-HHMMSS-<kind>.sql.gz[.age]`.
+Schedules are five-field cron expressions checked every 30 seconds;
+scheduled backups beyond the job's “keep” count are deleted. At most two
+backups run at once, one per service.
+
+### Monitoring
+
+`internal/monitor` samples every 30 seconds: server CPU, memory and network
+from `/proc` (the host's, mounted at `/host/proc`), disk from `statfs` on
+the data folder, and per-service figures from Docker's one-shot container
+stats, summed over a service's replicas. Samples go to the `metrics` table:
+raw for 24 hours, then 5-minute averages for the retention period (14 days
+by default). Alerts fire when a level stays above its threshold for N
+minutes, and once more when it recovers. A service whose tasks keep failing
+sends a “keeps crashing” event.
+
+### Notifications
+
+`internal/notify` sends events to Discord, Slack, Telegram, email (SMTP
+with STARTTLS or TLS) and generic webhooks (JSON, signed with
+`X-SimplePanel-Signature: sha256=<HMAC>` when a secret is set). Channels
+pick their events and, optionally, projects. Secret settings are never sent
+back to the browser. Each delivery is logged.
+
+### Automatic subdomains
+
+With a wildcard domain set, the Traefik file config gets one extra HTTPS
+router per app for `<app>-<project>.<wildcard>`, pointing at the app's HTTP
+port (its own setting, else its first domain's port, else 80). Apps can
+turn it off.
+
 ## Security model
 
 - **First-run setup:** the first visitor creates the admin account. Until that
@@ -270,13 +336,12 @@ install.sh            one-line installer
 Dockerfile            builds the SimplePanel image
 ```
 
-## Out of scope for v0.1 (planned)
+## Out of scope for now (planned)
 
 - More database engines (Redis, MongoDB)
 - Webhook signature verification (HMAC) in addition to the secret URL
 - OAuth for the MCP endpoint (tokens are pasted into the AI app for now)
 - App templates
-- S3-compatible backups of volumes and databases
 - Builds without a Dockerfile (Nixpacks)
 - Multi-node clusters with a built-in registry
-- Multiple users and roles
+- Two-factor sign-in

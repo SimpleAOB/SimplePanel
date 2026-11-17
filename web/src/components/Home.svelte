@@ -4,6 +4,8 @@
   import { data, go, initials } from '../lib/state.svelte.js';
   import Topbar from './Topbar.svelte';
   import ImportDialog from './ImportDialog.svelte';
+  import Metrics from './Metrics.svelte';
+  import { isAdmin } from '../lib/state.svelte.js';
 
   let importing = $state(false);
 
@@ -20,7 +22,7 @@
 <Topbar>
   Overview
   {#snippet actions()}
-    <button class="btn" onclick={() => (importing = true)}>Import project</button>
+    {#if isAdmin()}<button class="btn" onclick={() => (importing = true)}>Import project</button>{/if}
   {/snippet}
 </Topbar>
 {#if importing}<ImportDialog onclose={() => (importing = false)} />{/if}
@@ -43,11 +45,21 @@
   {/if}
 
   <section>
+    <h2>Server</h2>
+    <Metrics path="/metrics/server" server />
+  </section>
+
+  <section>
     <h2>Projects</h2>
     {#if data.projects.length === 0}
       <div class="card empty">
-        <p>You don't have any projects yet.</p>
-        <p class="muted">Click the <strong>+</strong> in the left rail to create one, then add your first app. Have an export from another server? Use <strong>Import project</strong>.</p>
+        {#if isAdmin()}
+          <p>You don't have any projects yet.</p>
+          <p class="muted">Click the <strong>+</strong> in the left rail to create one, then add your first app. Have an export from another server? Use <strong>Import project</strong>.</p>
+        {:else}
+          <p>You don't have access to any projects yet.</p>
+          <p class="muted">Ask an admin to give you access to a project.</p>
+        {/if}
       </div>
     {:else}
       <div class="grid">
@@ -68,7 +80,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-space-5);
-    max-width: 960px;
+    max-width: 1100px;
     width: 100%;
   }
   .hero {

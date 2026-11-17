@@ -1,9 +1,10 @@
 <script>
   import { onMount } from 'svelte';
   import { api, setUnauthorizedHandler } from './lib/api.js';
-  import { data, startRouter } from './lib/state.svelte.js';
+  import { data, ui, startRouter, go } from './lib/state.svelte.js';
   import Auth from './components/Auth.svelte';
   import Shell from './components/Shell.svelte';
+  import Invite from './components/Invite.svelte';
 
   let phase = $state('loading'); // loading | setup | login | ready | error
   let loadError = $state('');
@@ -38,7 +39,9 @@
   });
 </script>
 
-{#if phase === 'loading'}
+{#if ui.route.view === 'invite' && phase !== 'loading'}
+  <Invite token={ui.route.token} ondone={(u) => { data.user = u; phase = 'ready'; go('/'); }} />
+{:else if phase === 'loading'}
   <div class="center muted">Loading…</div>
 {:else if phase === 'error'}
   <div class="center"><p class="error">Can't reach SimplePanel: {loadError}</p></div>

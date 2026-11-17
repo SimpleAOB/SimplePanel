@@ -113,3 +113,19 @@
   --sp-shadow: 0 8px 24px rgba(20, 22, 30, 0.14);
   --sp-overlay: rgba(20, 22, 30, 0.35);
 }
+
+/* Chart series colours (validated for colour-blind separation on the
+ * panel surfaces in both themes). Series 1 is used for single-series
+ * charts; series 2 pairs with it (network in/out). */
+:root {
+  --sp-series-1: #3987e5;
+  --sp-series-2: #d95926;
+  --sp-series-fill: 0.12;
+  --sp-grid: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='light'] {
+  --sp-series-1: #2a78d6;
+  --sp-series-2: #eb6834;
+  --sp-series-fill: 0.1;
+  --sp-grid: rgba(0, 0, 0, 0.07);
+}

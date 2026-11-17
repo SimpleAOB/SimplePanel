@@ -1,6 +1,6 @@
 <script>
   import { api } from '../lib/api.js';
-  import { ui, data, go, initials, loadProjects, toggleTheme } from '../lib/state.svelte.js';
+  import { ui, data, go, initials, loadProjects, toggleTheme, isAdmin } from '../lib/state.svelte.js';
   import Logo from './Logo.svelte';
   import Icon from './Icon.svelte';
 
@@ -37,10 +37,12 @@
         <span class="icon">{initials(p.name)}</span>
       </button>
     {/each}
-    <button class="item" title="New project" onclick={() => { adding = !adding; error = ''; }}>
-      <span class="pill"></span>
-      <span class="icon add"><Icon name="plus" /></span>
-    </button>
+    {#if isAdmin()}
+      <button class="item" title="New project" onclick={() => { adding = !adding; error = ''; }}>
+        <span class="pill"></span>
+        <span class="icon add"><Icon name="plus" /></span>
+      </button>
+    {/if}
   </div>
 
   <div class="bottom">

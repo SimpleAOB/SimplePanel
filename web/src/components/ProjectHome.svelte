@@ -1,6 +1,8 @@
 <script>
+  import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, data, go, loadProjects, appIcon } from '../lib/state.svelte.js';
+  import { ui, data, go, loadProjects, appIcon, projectLevel, isAdmin } from '../lib/state.svelte.js';
+  import { bytes, pct } from '../lib/format.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -13,6 +15,15 @@
   let apps = $derived(data.appsFor === ui.route.projectId ? data.apps : []);
   let error = $state('');
   let confirmName = $state('');
+  let level = $derived(projectLevel(ui.route.projectId));
+  let usage = $state({});
+
+  onMount(() => {
+    const load = () => api.get(`/projects/${ui.route.projectId}/metrics`).then((u) => (usage = u)).catch(() => {});
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  });
 
   async function remove() {
     error = '';
@@ -30,17 +41,24 @@
   <Topbar>
     {project.name}
     {#snippet actions()}
-      <button class="btn hide-sm" onclick={() => (dialog = 'import')}>Import</button>
-      <button class="btn hide-sm" onclick={() => (dialog = 'export')}>Export</button>
-      <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}><Icon name="plus" size={16} /> New</button>
+      {#if level >= 2}
+        <button class="btn hide-sm" onclick={() => (dialog = 'import')}>Import</button>
+        <button class="btn hide-sm" onclick={() => (dialog = 'export')}>Export</button>
+        <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}><Icon name="plus" size={16} /> New</button>
+      {/if}
     {/snippet}
   </Topbar>
   <div class="page">
     {#if apps.length === 0}
       <div class="card empty">
-        <h2>Add your first app</h2>
-        <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres or MySQL database.</p>
-        <div><button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button></div>
+        {#if level >= 2}
+          <h2>Add your first app</h2>
+          <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres or MySQL database.</p>
+          <div><button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button></div>
+        {:else}
+          <h2>Nothing here yet</h2>
+          <p class="muted">This project has no apps or databases.</p>
+        {/if}
       </div>
     {:else}
       <div class="grid">
@@ -54,11 +72,20 @@
               <Icon name={appIcon(a)} size={14} />
               {a.source === 'git' ? a.gitUrl.replace('https://', '') : a.image}
             </span>
+            {#if usage[a.id]}
+              {@const u = usage[a.id]}
+              <span class="usage faint">
+                <span title="CPU, % of the server">CPU {pct(u.cpu)}</span>
+                <span title="Memory">{bytes(u.mem)}{u.memLimit ? ` of ${bytes(u.memLimit, 0)}` : ''}</span>
+                {#if u.memLimit}<span class="meter" aria-hidden="true"><span style="width:{Math.min(100, (u.mem / u.memLimit) * 100)}%"></span></span>{/if}
+              </span>
+            {/if}
           </button>
         {/each}
       </div>
     {/if}
 
+    {#if level >= 2}
     <section class="card transfer">
       <div>
         <h3>Export and import</h3>
@@ -69,8 +96,9 @@
         <button class="btn" onclick={() => (dialog = 'import')}>Import service</button>
       </div>
     </section>
+    {/if}
 
-    {#if ui.advanced}
+    {#if ui.advanced && isAdmin()}
       <section class="card danger-zone">
         <h3>Delete project</h3>
         <p class="muted">Removes every app in this project and its domains. Volumes are kept.</p>
@@ -135,6 +163,27 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .usage {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-3);
+    font-size: var(--sp-text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .meter {
+    flex: 1;
+    height: 4px;
+    border-radius: var(--sp-radius-round);
+    background: var(--sp-bg-active);
+    overflow: hidden;
+    min-width: 40px;
+  }
+  .meter span {
+    display: block;
+    height: 100%;
+    background: var(--sp-series-1);
+    border-radius: var(--sp-radius-round);
   }
   .empty {
     display: flex;

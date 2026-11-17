@@ -59,6 +59,35 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 - **Advanced view**: replicas, CPU and memory limits, volumes, published
   ports and command overrides, hidden until you need them.
 
+## New in v0.2
+
+- **Backups to S3-compatible storage** (AWS S3, Cloudflare R2, Backblaze
+  B2, Wasabi, MinIO…). Back up PostgreSQL, MySQL and MariaDB databases, the
+  volumes of any app, and SimplePanel's own configuration, on a schedule
+  or on demand, keeping the last N. Backups are plain SQL dumps or tar
+  archives, gzipped and optionally **encrypted with
+  [age](https://age-encryption.org)**, so you can also open them without
+  SimplePanel (`age -d backup.sql.gz.age | gunzip`).
+- **Restore by picking a backup**: into the same database, or into a new
+  database next to it so you can compare first. **Find backups in a
+  bucket** lists backups made by another server, for moving to a new one.
+- **Monitoring**: CPU, memory, disk and network history for the server and
+  every service, from 1 hour to 30 days, with no extra containers. Alerts
+  when usage stays high, and when a service keeps crashing.
+- **Users and roles**: invite people with a link. **Owner** and **Admin**
+  manage everything; **Developers** create, configure and deploy in the
+  projects you pick; **Viewers** only look. Every change is in the
+  activity log.
+- **Notifications** to Discord, Slack, Telegram, email or any webhook
+  (signed with HMAC-SHA256) for failed deploys and backups, crashing
+  services and resource alerts.
+- **Automatic subdomains**: set a wildcard domain such as
+  `apps.example.com` once (with a `*.apps.example.com` DNS record) and
+  every app gets `app-project.apps.example.com` with HTTPS.
+
+Server monitoring reads the host's `/proc`, which the installer mounts
+read-only. Re-run the install command to add it to an existing install.
+
 ## Deploy webhooks
 
 Every app has a secret webhook URL (Overview tab, with Advanced view on).
@@ -96,12 +125,19 @@ Each token has an access level, and the AI only sees the tools it allows:
 | --------- | ----- |
 | Read-only | list projects, service details, logs, deployments and build logs, export, database queries (see below) |
 | Manage    | + create projects, apps and databases, change settings and env vars, domains, deploy, restart/stop/start, import |
-| Full      | + delete services and projects |
+| Full      | + delete services and projects, restore backups over current data |
+
+A token belongs to the user who created it and can never do more than that
+user's role allows. v0.2 adds tools for metrics (`get_metrics`) and backups
+(`list_backups`, `backup_now`, `restore_backup`, `get_backup`). With a
+Manage token the AI can only restore into a new database; replacing data
+needs a Full token and the service's name as confirmation.
 
 The AI never sees secrets: environment variable values, database passwords,
 Git tokens and webhook URLs are left out of every answer, so it asks you
 when it needs one. Every change and every database query is listed under
-**AI activity** in Settings.
+**Connect an AI** in Settings, and admins see everything under
+**Users → Activity**.
 
 **Database queries.** On a database's page, **Allow AI read-only access**
 creates a separate database user that can only read that database's data.

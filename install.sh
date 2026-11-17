@@ -232,7 +232,14 @@ if [ "$existing_install" = true ]; then
 	info "Upgrading SimplePanel"
 	# Not detached: wait until the new task has replaced the old one, so the
 	# health check below talks to the upgraded panel.
-	docker service update --quiet --image "$SP_IMAGE" \
+	# Installs from before v0.2 lack the read-only /proc mount used for
+	# server monitoring.
+	proc_mount=""
+	if ! docker service inspect simplepanel --format '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Target}} {{end}}' | grep -q '/host/proc'; then
+		proc_mount="--mount-add type=bind,source=/proc,target=/host/proc,readonly"
+	fi
+	# shellcheck disable=SC2086
+	docker service update --quiet --image "$SP_IMAGE" $proc_mount \
 		--env-add "SP_ENDPOINT_MODE=$endpoint_mode" --force simplepanel >/dev/null
 else
 	info "Starting SimplePanel"
@@ -244,6 +251,7 @@ else
 		--publish "mode=host,target=3000,published=$SP_PORT,protocol=tcp" \
 		--mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
 		--mount type=volume,source=simplepanel-data,target=/data \
+		--mount type=bind,source=/proc,target=/host/proc,readonly \
 		--mount type=volume,source=simplepanel-traefik-dynamic,target=/etc/traefik/dynamic \
 		--env "SP_ENDPOINT_MODE=$endpoint_mode" \
 		--update-order stop-first \

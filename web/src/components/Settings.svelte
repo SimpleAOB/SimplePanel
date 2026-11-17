@@ -1,96 +1,42 @@
 <script>
-  import { onMount } from 'svelte';
-  import { api } from '../lib/api.js';
-  import { ui, toggleTheme } from '../lib/state.svelte.js';
+  import { ui, isAdmin, go } from '../lib/state.svelte.js';
+  import { settingsSections } from '../lib/settings.js';
   import Topbar from './Topbar.svelte';
   import ConnectAI from './ConnectAI.svelte';
+  import General from './settings/General.svelte';
+  import Users from './settings/Users.svelte';
+  import Backups from './settings/Backups.svelte';
+  import Notifications from './settings/Notifications.svelte';
+  import Monitoring from './settings/Monitoring.svelte';
+  import Account from './settings/Account.svelte';
 
-  let panelDomain = $state('');
-  let savedDomain = $state('');
-  let domainMsg = $state('');
-  let domainErr = $state('');
-  let current = $state('');
-  let next = $state('');
-  let pwMsg = $state('');
-  let pwErr = $state('');
-
-  onMount(async () => {
-    const s = await api.get('/system');
-    panelDomain = savedDomain = s.panelDomain || '';
-  });
-
-  async function saveDomain(e) {
-    e.preventDefault();
-    domainMsg = domainErr = '';
-    try {
-      await api.put('/settings', { panelDomain });
-      savedDomain = panelDomain;
-      domainMsg = panelDomain
-        ? `Saved. Once DNS for ${panelDomain} points at this server, open https://${panelDomain}.`
-        : 'Saved. The panel is only reachable on port 3000.';
-    } catch (err) {
-      domainErr = err.message;
-    }
-  }
-
-  async function changePassword(e) {
-    e.preventDefault();
-    pwMsg = pwErr = '';
-    try {
-      await api.post('/me/password', { current, new: next });
-      current = next = '';
-      pwMsg = 'Password changed. Other sessions were signed out.';
-    } catch (err) {
-      pwErr = err.message;
-    }
-  }
+  let sections = $derived(settingsSections(isAdmin()));
+  let current = $derived(sections.find((s) => s[0] === ui.route.section) ? ui.route.section : sections[0][0]);
+  let title = $derived(sections.find((s) => s[0] === current)?.[1]);
 </script>
 
-<Topbar>Settings</Topbar>
+<Topbar>Settings · {title}</Topbar>
+<nav class="mobile-tabs" aria-label="Settings sections">
+  {#each sections as [key, label] (key)}
+    <a href="#/settings/{key}" class:active={current === key}>{label}</a>
+  {/each}
+</nav>
 <div class="page">
-  <form class="card" onsubmit={saveDomain}>
-    <h2>Panel domain</h2>
-    <p class="muted">Serve SimplePanel itself over HTTPS on your own domain. Point an A record at this server first.</p>
-    <div class="row">
-      <label class="field">
-        <span>Domain</span>
-        <input type="text" bind:value={panelDomain} placeholder="panel.example.com" />
-      </label>
-      <button class="btn primary">Save</button>
-    </div>
-    {#if domainMsg}<p class="ok">{domainMsg}</p>{/if}
-    {#if domainErr}<p class="error">{domainErr}</p>{/if}
-  </form>
-
-  <ConnectAI panelDomain={savedDomain} />
-
-  <section class="card">
-    <h2>Appearance</h2>
-    <div class="row between">
-      <p class="muted">Theme</p>
-      <div class="segmented">
-        <button class:active={ui.theme === 'dark'} onclick={() => ui.theme !== 'dark' && toggleTheme()}>Dark</button>
-        <button class:active={ui.theme === 'light'} onclick={() => ui.theme !== 'light' && toggleTheme()}>Light</button>
-      </div>
-    </div>
-  </section>
-
-  <form class="card" onsubmit={changePassword}>
-    <h2>Change password</h2>
-    <div class="row">
-      <label class="field">
-        <span>Current password</span>
-        <input type="password" bind:value={current} autocomplete="current-password" required />
-      </label>
-      <label class="field">
-        <span>New password</span>
-        <input type="password" bind:value={next} autocomplete="new-password" required />
-      </label>
-      <button class="btn">Change</button>
-    </div>
-    {#if pwMsg}<p class="ok">{pwMsg}</p>{/if}
-    {#if pwErr}<p class="error">{pwErr}</p>{/if}
-  </form>
+  {#if current === 'general'}
+    <General />
+  {:else if current === 'users'}
+    <Users />
+  {:else if current === 'backups'}
+    <Backups />
+  {:else if current === 'notifications'}
+    <Notifications />
+  {:else if current === 'monitoring'}
+    <Monitoring />
+  {:else if current === 'ai'}
+    <ConnectAI />
+  {:else}
+    <Account />
+  {/if}
 </div>
 
 <style>
@@ -99,20 +45,49 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-space-4);
-    max-width: 760px;
+    max-width: 860px;
     width: 100%;
   }
-  .card {
+  .mobile-tabs {
+    display: none;
+    gap: var(--sp-space-1);
+    padding: 0 var(--sp-space-4);
+    border-bottom: 1px solid var(--sp-border);
+    overflow-x: auto;
+    flex: none;
+  }
+  .mobile-tabs a {
+    padding: var(--sp-space-3);
+    color: var(--sp-text-muted);
+    font-size: var(--sp-text-sm);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  .mobile-tabs a.active {
+    color: var(--sp-text);
+    border-bottom-color: var(--sp-accent);
+  }
+  .page :global(.card) {
     display: flex;
     flex-direction: column;
     gap: var(--sp-space-3);
   }
-  .between {
+  .page :global(.ok) {
+    color: var(--sp-success);
+    font-size: var(--sp-text-sm);
+  }
+  .page :global(.between) {
     justify-content: space-between;
     align-items: center;
   }
-  .ok {
-    color: var(--sp-success);
-    font-size: var(--sp-text-sm);
+  .page :global(.end) {
+    justify-content: flex-end;
+    align-items: center;
+  }
+  @media (max-width: 760px) {
+    .mobile-tabs {
+      display: flex;
+    }
   }
 </style>

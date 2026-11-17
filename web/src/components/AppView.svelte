@@ -8,6 +8,8 @@
   import StatusBadge from './StatusBadge.svelte';
   import AppFields from './AppFields.svelte';
   import ExportDialog from './ExportDialog.svelte';
+  import Metrics from './Metrics.svelte';
+  import BackupsView from './BackupsView.svelte';
 
   let exporting = $state(false);
 
@@ -29,12 +31,32 @@
   const pid = ui.route.projectId;
   const aid = ui.route.appId;
   let tab = $derived(ui.route.tab);
-  const tabs = [
+  let level = $derived(detail?.level ?? 0);
+  let canDeploy = $derived(level >= 2);
+  let canManage = $derived(level >= 3);
+  let tabs = $derived([
     ['overview', 'Overview'],
-    ['environment', 'Environment'],
+    ['metrics', 'Metrics'],
+    ...(detail?.backupKind ? [['backups', 'Backups']] : []),
+    ...(canDeploy ? [['environment', 'Environment']] : []),
     ['deployments', 'Deployments'],
     ['settings', 'Settings'],
-  ];
+  ]);
+  let autoBusy = $state(false);
+  let autoPort = $state(0);
+
+  async function setAuto(on, port) {
+    autoBusy = true;
+    error = '';
+    try {
+      await api.put(`/apps/${aid}`, { ...payload(formFromApp(detail.app)), autoDomain: on, httpPort: Number(port) || 0 });
+      await refresh(false);
+    } catch (err) {
+      error = err.message;
+    } finally {
+      autoBusy = false;
+    }
+  }
 
   async function refresh(resetForm = false) {
     try {
@@ -172,7 +194,7 @@
     {detail.app.name}
     <StatusBadge status={detail.status} />
     {#snippet actions()}
-      <button class="btn primary" disabled={!!busy} onclick={deploy}><Icon name="refresh" size={16} /> Deploy</button>
+      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy}><Icon name="refresh" size={16} /> Deploy</button>{/if}
       <button
         class="btn icon"
         class:active={ui.panelOpen}
@@ -203,9 +225,9 @@
           {#if detail.app.source === 'git' && detail.app.gitBranch}<span class="faint">@ {detail.app.gitBranch}</span>{/if}
         </p>
         <div class="row buttons">
-          {#if detail.status.state === 'stopped'}
+          {#if canDeploy && detail.status.state === 'stopped'}
             <button class="btn" disabled={!!busy} onclick={start}>Start</button>
-          {:else if detail.status.state !== 'not_deployed'}
+          {:else if canDeploy && detail.status.state !== 'not_deployed'}
             <button class="btn" disabled={!!busy} onclick={restart}>Restart</button>
             <button class="btn" disabled={!!busy} onclick={stop}>Stop</button>
           {/if}
@@ -252,7 +274,7 @@
           </p>
           <div class="row end">
             {#if aiMsg}<span class="muted small">{aiMsg}</span>{/if}
-            <button class="btn {detail.aiAccess ? '' : 'primary'}" disabled={busy === 'ai'} onclick={toggleAI}>
+            <button class="btn {detail.aiAccess ? '' : 'primary'}" disabled={busy === 'ai' || !canDeploy} onclick={toggleAI}>
               {busy === 'ai' ? 'Working…' : detail.aiAccess ? 'Turn off' : 'Allow AI read-only access'}
             </button>
           </div>
@@ -260,7 +282,31 @@
       {:else}
       <section class="card">
         <h3>Domains</h3>
-        {#if detail.domains.length === 0}
+        {#if detail.autoHost || (!detail.app.autoDomain && detail.wildcard)}
+          <div class="auto">
+            <Icon name="link" size={16} />
+            {#if detail.app.autoDomain}
+              <a href="https://{detail.autoHost}" target="_blank" rel="noopener noreferrer">{detail.autoHost}</a>
+              <span class="faint">→ port {detail.autoPort} · automatic</span>
+            {:else}
+              <span class="faint">Automatic subdomain is off</span>
+            {/if}
+            {#if canDeploy}
+              <button class="btn ghost small" disabled={autoBusy} onclick={() => setAuto(!detail.app.autoDomain, detail.app.httpPort)}>{detail.app.autoDomain ? 'Turn off' : 'Turn on'}</button>
+            {/if}
+          </div>
+          {#if ui.advanced && canDeploy && detail.app.autoDomain}
+            <form class="row" onsubmit={(e) => { e.preventDefault(); setAuto(true, autoPort); }}>
+              <label class="field port">
+                <span>Automatic subdomain port</span>
+                <input type="number" min="0" max="65535" bind:value={autoPort} placeholder={String(detail.autoPort)} />
+              </label>
+              <button class="btn" disabled={autoBusy}>Set port</button>
+              <small class="faint">0 uses the port of the first domain below, or 80.</small>
+            </form>
+          {/if}
+        {/if}
+        {#if detail.domains.length === 0 && !detail.autoHost}
           <p class="muted">No domains yet. Add one to make this app reachable over HTTPS.</p>
         {/if}
         <ul class="domains">
@@ -269,10 +315,11 @@
               <Icon name="globe" size={16} />
               <a href="{d.https ? 'https' : 'http'}://{d.host}" target="_blank" rel="noopener noreferrer">{d.host}</a>
               <span class="faint">→ port {d.port}{d.https ? '' : ' (HTTP only)'}</span>
-              <button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>
+              {#if canDeploy}<button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>{/if}
             </li>
           {/each}
         </ul>
+        {#if canDeploy}
         <form class="row" onsubmit={addDomain}>
           <label class="field host">
             <span>Domain</span>
@@ -287,11 +334,12 @@
           {/if}
           <button class="btn">Add domain</button>
         </form>
+        {/if}
         {#if domainErr}<p class="error">{domainErr}</p>{/if}
-        <small class="faint">Point the domain's DNS (A record) at this server. Certificates are issued automatically.</small>
+        {#if canDeploy}<small class="faint">Point the domain's DNS (A record) at this server. Certificates are issued automatically.</small>{/if}
       </section>
 
-      {#if ui.advanced}
+      {#if ui.advanced && detail.webhookPath}
         <section class="card">
           <h3>Deploy webhook</h3>
           <p class="muted">POST to this URL (for example from a GitHub webhook) to redeploy. Keep it secret.</p>
@@ -304,7 +352,11 @@
         </section>
       {/if}
       {/if}
-    {:else if tab === 'environment'}
+    {:else if tab === 'metrics'}
+      <Metrics path="/apps/{aid}/metrics" />
+    {:else if tab === 'backups' && detail.backupKind}
+      <BackupsView appId={aid} appName={detail.app.name} isDb={isDb} level={level} />
+    {:else if tab === 'environment' && canDeploy}
       <form class="card" onsubmit={saveEnv}>
         <h3>Environment variables</h3>
         <p class="muted">One <code>KEY=value</code> per line. Lines starting with # are ignored.</p>
@@ -342,7 +394,7 @@
         {/if}
         <div class="row end">
           {#if saved}<span class="ok">{saved}</span>{/if}
-          <button class="btn primary" disabled={!!busy}>Save</button>
+          {#if canDeploy}<button class="btn primary" disabled={!!busy}>Save</button>{:else}<span class="faint">Your role can view these settings but not change them.</span>{/if}
         </div>
       </form>
 
@@ -355,6 +407,7 @@
         <ExportDialog title="Export {detail.app.name}" path="/apps/{aid}/export" filename={detail.app.name} onclose={() => (exporting = false)} />
       {/if}
 
+      {#if canManage}
       <section class="card danger-zone">
         <h3>Delete {isDb ? 'database' : 'app'}</h3>
         <p class="muted">{isDb ? 'Stops the database. Its data volume is kept on the server.' : 'Stops the app and removes its domains. Volumes are kept.'}</p>
@@ -366,6 +419,7 @@
           <button class="btn danger" disabled={confirmName !== detail.app.name || !!busy} onclick={removeApp}>Delete app</button>
         </div>
       </section>
+      {/if}
     {/if}
   </div>
 {/if}
@@ -528,6 +582,19 @@
   }
   .conn code {
     overflow-wrap: anywhere;
+  }
+  .auto {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+    flex-wrap: wrap;
+  }
+  .auto a {
+    font-weight: var(--sp-weight-medium);
+    overflow-wrap: anywhere;
+  }
+  .auto .btn {
+    margin-left: auto;
   }
   .danger-zone {
     border-color: var(--sp-danger);

@@ -54,14 +54,22 @@ export function setPanelOpen(v) {
 
 // ---- Routing (hash based) ----
 // #/                      overview
-// #/settings              panel settings
+// #/settings[/:section]   panel settings
+// #/invite/:token         invite or password reset link
 // #/p/:pid                project
 // #/p/:pid/new            new app
 // #/p/:pid/a/:aid[/:tab]  app
 function parseHash() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  const r = { view: 'home', projectId: 0, appId: 0, tab: 'overview' };
-  if (parts[0] === 'settings') r.view = 'settings';
+  const r = { view: 'home', projectId: 0, appId: 0, tab: 'overview', section: '', token: '' };
+  if (parts[0] === 'settings') {
+    r.view = 'settings';
+    r.section = parts[1] || '';
+  }
+  if (parts[0] === 'invite') {
+    r.view = 'invite';
+    r.token = parts[1] || '';
+  }
   if (parts[0] === 'p' && parts[1]) {
     r.projectId = Number(parts[1]) || 0;
     r.view = 'project';
@@ -136,3 +144,17 @@ export function appIcon(a) {
   if (a.kind && a.kind !== 'app') return 'db';
   return a.source === 'git' ? 'git' : 'box';
 }
+
+// ---- Roles ----
+// Project access levels, as the API reports them.
+export const LEVEL = { none: 0, view: 1, deploy: 2, manage: 3 };
+
+export function isAdmin() {
+  return data.user?.role === 'owner' || data.user?.role === 'admin';
+}
+
+export function projectLevel(pid) {
+  return data.projects.find((p) => p.id === pid)?.level ?? 0;
+}
+
+export const roleLabels = { owner: 'Owner', admin: 'Admin', developer: 'Developer', viewer: 'Viewer' };

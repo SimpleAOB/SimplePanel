@@ -3,15 +3,15 @@
   // instructions for AI clients, and the log of what AI tokens did.
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { timeAgo } from '../lib/state.svelte.js';
+  import { timeAgo, data } from '../lib/state.svelte.js';
   import Icon from './Icon.svelte';
 
-  let { panelDomain = '' } = $props();
+  let panelDomain = $state('');
 
   const scopes = [
     ['read', 'Read-only', 'See projects, services, logs and deployments. Query databases that allow AI read-only access.'],
     ['manage', 'Manage', 'Read-only, plus create apps and databases, change settings and environment variables, add domains and deploy.'],
-    ['full', 'Full', 'Manage, plus delete apps, databases and projects.'],
+    ['full', 'Full', 'Manage, plus delete apps, databases and projects, and restore backups over current data.'],
   ];
   const scopeLabel = Object.fromEntries(scopes.map(([k, l]) => [k, l]));
 
@@ -34,11 +34,12 @@
   );
 
   async function load() {
-    [tokens, audit] = await Promise.all([api.get('/tokens'), api.get('/audit?limit=100')]);
+    [tokens, audit] = await Promise.all([api.get('/tokens'), api.get('/audit?limit=100&source=mcp')]);
   }
   onMount(() => {
     load().catch((e) => (err = e.message));
-    const t = setInterval(() => api.get('/audit?limit=100').then((a) => (audit = a)).catch(() => {}), 10000);
+    api.get('/system').then((s) => (panelDomain = s.panelDomain || '')).catch(() => {});
+    const t = setInterval(() => api.get('/audit?limit=100&source=mcp').then((a) => (audit = a)).catch(() => {}), 10000);
     return () => clearInterval(t);
   });
 
@@ -97,7 +98,7 @@
           <button type="button" role="radio" aria-checked={scope === key} class:active={scope === key} onclick={() => (scope = key)}>{label}</button>
         {/each}
       </div>
-      <small>{scopes.find((s) => s[0] === scope)[2]}</small>
+      <small>{scopes.find((s) => s[0] === scope)[2]} A token can never do more than your own role allows.</small>
     </div>
     <div><button class="btn primary">Create token</button></div>
   </form>
@@ -132,7 +133,7 @@
     {/if}
     <small class="faint">Server URL: <code>{endpoint}</code>{#if !created} · Replace &lt;your token&gt; with a token you created.{/if}</small>
     {#if insecure}
-      <p class="warn">This panel is served over plain HTTP, so the token would travel unencrypted. Set a panel domain above to use HTTPS first.</p>
+      <p class="warn">This panel is served over plain HTTP, so the token would travel unencrypted. Set a panel domain under General to use HTTPS first.</p>
     {/if}
   </div>
 
@@ -145,7 +146,7 @@
         <li>
           <div class="grow">
             <div class="name">{t.name}</div>
-            <div class="faint small">Created {timeAgo(t.createdAt)} · {t.lastUsedAt ? `Last used ${timeAgo(t.lastUsedAt)}` : 'Never used'}</div>
+            <div class="faint small">{#if t.username && t.username !== data.user?.username}{t.username} · {/if}Created {timeAgo(t.createdAt)} · {t.lastUsedAt ? `Last used ${timeAgo(t.lastUsedAt)}` : 'Never used'}</div>
           </div>
           <span class="scope {t.scope}">{scopeLabel[t.scope] || t.scope}</span>
           <button class="btn ghost small" onclick={() => revoke(t)}>Revoke</button>
@@ -170,7 +171,7 @@
             {/if}
             {#if !e.ok}<div class="fail-msg small">{e.error}</div>{/if}
           </div>
-          <div class="faint small when">{e.tokenName}<br />{timeAgo(e.createdAt)}</div>
+          <div class="faint small when">{e.tokenName}{#if e.username && e.username !== data.user?.username} · {e.username}{/if}<br />{timeAgo(e.createdAt)}</div>
         </li>
       {/each}
     </ul>

@@ -1,12 +1,15 @@
 <script>
   import { api } from '../lib/api.js';
-  import { ui, data, go, setAdvanced, appIcon } from '../lib/state.svelte.js';
+  import { ui, data, go, setAdvanced, appIcon, isAdmin, projectLevel, LEVEL, roleLabels } from '../lib/state.svelte.js';
+  import { settingsSections } from '../lib/settings.js';
   import Icon from './Icon.svelte';
 
   let project = $derived(data.projects.find((p) => p.id === ui.route.projectId));
   let all = $derived(data.appsFor === ui.route.projectId ? data.apps : []);
   let apps = $derived(all.filter((a) => !a.kind || a.kind === 'app'));
   let dbs = $derived(all.filter((a) => a.kind && a.kind !== 'app'));
+  let canAdd = $derived(project && projectLevel(project.id) >= LEVEL.deploy);
+  let sections = $derived(settingsSections(isAdmin()));
 
   async function logout() {
     try {
@@ -20,7 +23,7 @@
 
 <aside class="sidebar">
   <header>
-    <h2 class="title">{project ? project.name : 'SimplePanel'}</h2>
+    <h2 class="title">{project ? project.name : ui.route.view === 'settings' ? 'Settings' : 'SimplePanel'}</h2>
   </header>
 
   <div class="scroll">
@@ -30,9 +33,11 @@
       </button>
       <div class="section">
         <span>Apps</span>
-        <button class="btn ghost icon small" title="New app" aria-label="New app" onclick={() => go(`/p/${project.id}/new`)}>
-          <Icon name="plus" size={16} />
-        </button>
+        {#if canAdd}
+          <button class="btn ghost icon small" title="New app" aria-label="New app" onclick={() => go(`/p/${project.id}/new`)}>
+            <Icon name="plus" size={16} />
+          </button>
+        {/if}
       </div>
       {#each apps as a (a.id)}
         <button class="link" class:active={ui.route.appId === a.id} onclick={() => go(`/p/${project.id}/a/${a.id}`)}>
@@ -45,9 +50,11 @@
       {/each}
       <div class="section">
         <span>Databases</span>
-        <button class="btn ghost icon small" title="New database" aria-label="New database" onclick={() => go(`/p/${project.id}/new/database`)}>
-          <Icon name="plus" size={16} />
-        </button>
+        {#if canAdd}
+          <button class="btn ghost icon small" title="New database" aria-label="New database" onclick={() => go(`/p/${project.id}/new/database`)}>
+            <Icon name="plus" size={16} />
+          </button>
+        {/if}
       </div>
       {#each dbs as a (a.id)}
         <button class="link" class:active={ui.route.appId === a.id} onclick={() => go(`/p/${project.id}/a/${a.id}`)}>
@@ -58,9 +65,21 @@
       {:else}
         <p class="empty faint">No databases yet.</p>
       {/each}
-      <button class="link add" class:active={ui.route.view === 'new-app'} onclick={() => go(`/p/${project.id}/new`)}>
-        <Icon name="plus" size={18} /> New app or database
+      {#if canAdd}
+        <button class="link add" class:active={ui.route.view === 'new-app'} onclick={() => go(`/p/${project.id}/new`)}>
+          <Icon name="plus" size={18} /> New app or database
+        </button>
+      {/if}
+    {:else if ui.route.view === 'settings'}
+      <button class="link" onclick={() => go('/')}>
+        <Icon name="box" size={18} /> Overview
       </button>
+      <div class="section"><span>Settings</span></div>
+      {#each sections as [key, label, icon] (key)}
+        <button class="link" class:active={(ui.route.section || sections[0][0]) === key} onclick={() => go(`/settings/${key}`)}>
+          <Icon name={icon} size={18} /> {label}
+        </button>
+      {/each}
     {:else}
       <button class="link" class:active={ui.route.view === 'home'} onclick={() => go('/')}>
         <Icon name="box" size={18} /> Overview
@@ -87,7 +106,10 @@
     </label>
     <div class="user">
       <span class="avatar">{data.user?.username?.[0]?.toUpperCase()}</span>
-      <span class="name">{data.user?.username}</span>
+      <span class="who">
+        <span class="name">{data.user?.username}</span>
+        <span class="role faint">{roleLabels[data.user?.role] || ''}</span>
+      </span>
       <button class="btn ghost small" onclick={logout}>Sign out</button>
     </div>
   </footer>
@@ -189,8 +211,17 @@
     align-items: center;
     gap: var(--sp-space-2);
   }
-  .user .name {
+  .who {
     flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+  }
+  .role {
+    font-size: var(--sp-text-xs);
+  }
+  .user .name {
     font-size: var(--sp-text-sm);
     font-weight: var(--sp-weight-medium);
     overflow: hidden;
