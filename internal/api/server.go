@@ -16,8 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SimpleAOB/SimplePanel/internal/backup"
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/docker"
+	"github.com/SimpleAOB/SimplePanel/internal/monitor"
+	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 )
 
@@ -36,6 +39,10 @@ type Server struct {
 	ui      fs.FS
 	version string
 
+	backups *backup.Service
+	monitor *monitor.Monitor
+	notify  *notify.Notifier
+
 	loginLimit   *limiter
 	hookLimit    *limiter
 	mcpAuthLimit *limiter // failed MCP token attempts per IP
@@ -50,6 +57,12 @@ func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *
 	}
 }
 
+// Use attaches the v0.2 services: backups, monitoring and notifications.
+func (s *Server) Use(b *backup.Service, m *monitor.Monitor, n *notify.Notifier) *Server {
+	s.backups, s.monitor, s.notify = b, m, n
+	return s
+}
+
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -60,6 +73,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup", s.postSetup)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/hooks/deploy/{token}", s.webhookDeploy)
+	mux.HandleFunc("GET /api/invite/{token}", s.getInvite)
+	mux.HandleFunc("POST /api/invite/{token}", s.acceptInvite)
 	mux.HandleFunc("/mcp", s.mcp) // authenticated with API tokens, see mcp.go
 
 	// Authenticated
@@ -75,6 +90,48 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/tokens", s.createToken)
 	a("DELETE /api/tokens/{id}", s.deleteToken)
 	a("GET /api/audit", s.listAudit)
+
+	a("GET /api/users", s.listUsers)
+	a("POST /api/users", s.createUser)
+	a("PUT /api/users/{id}", s.updateUser)
+	a("DELETE /api/users/{id}", s.deleteUser)
+	a("POST /api/users/{id}/reset", s.resetUser)
+
+	a("GET /api/metrics/server", s.serverMetrics)
+	a("GET /api/apps/{id}/metrics", s.appMetrics)
+	a("GET /api/projects/{id}/metrics", s.projectMetrics)
+	a("GET /api/monitoring/settings", s.getMonitoringSettings)
+	a("PUT /api/monitoring/settings", s.putMonitoringSettings)
+
+	a("GET /api/notifications", s.listChannels)
+	a("POST /api/notifications", s.saveChannel)
+	a("PUT /api/notifications/{id}", s.saveChannel)
+	a("DELETE /api/notifications/{id}", s.deleteChannel)
+	a("POST /api/notifications/test", s.testChannel)
+	a("POST /api/notifications/{id}/test", s.testChannel)
+
+	a("GET /api/backups/destinations", s.listDestinations)
+	a("POST /api/backups/destinations", s.saveDestination)
+	a("POST /api/backups/destinations/test", s.testDestination)
+	a("PUT /api/backups/destinations/{id}", s.saveDestination)
+	a("DELETE /api/backups/destinations/{id}", s.deleteDestination)
+	a("POST /api/backups/destinations/{id}/key", s.revealPassphrase)
+	a("GET /api/backups/panel", s.panelBackups)
+	a("POST /api/backups/panel", s.runBackup)
+	a("POST /api/backups/panel/jobs", s.createJob)
+	a("GET /api/backups/panel/remote", s.remoteBackups)
+	a("GET /api/backups/{id}", s.getBackup)
+	a("DELETE /api/backups/{id}", s.deleteBackup)
+	a("GET /api/backups/{id}/download", s.downloadBackup)
+	a("PUT /api/backup-jobs/{id}", s.updateJob)
+	a("DELETE /api/backup-jobs/{id}", s.deleteJob)
+	a("GET /api/apps/{id}/backups", s.appBackups)
+	a("POST /api/apps/{id}/backups", s.runBackup)
+	a("GET /api/apps/{id}/backups/remote", s.remoteBackups)
+	a("GET /api/apps/{app}/backups/file", s.downloadBackup)
+	a("POST /api/apps/{id}/backup-jobs", s.createJob)
+	a("POST /api/apps/{id}/restore", s.restoreBackup)
+	a("GET /api/restores/{id}", s.getRestore)
 
 	a("GET /api/projects", s.listProjects)
 	a("POST /api/projects", s.createProject)
@@ -268,13 +325,14 @@ func (l *limiter) Allow(key string) bool {
 	return w.n <= l.max
 }
 
-// StartJanitor prunes expired sessions periodically.
+// StartJanitor prunes expired sessions and invite links periodically.
 func (s *Server) StartJanitor(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
 			_ = s.store.PruneSessions(ctx)
+			_ = s.store.PruneInvites(ctx)
 			select {
 			case <-ctx.Done():
 				return

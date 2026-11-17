@@ -79,7 +79,7 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
 		return
 	}
-	tok, err := s.mcpToken(r)
+	tok, user, err := s.mcpToken(r)
 	if err != nil {
 		s.mcpAuthLimit.Allow(ip)
 		h.Set("WWW-Authenticate", `Bearer realm="SimplePanel"`)
@@ -146,7 +146,7 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 			writeRPC(w, msg.ID, nil, &jsonrpcErr{-32602, "unknown tool: " + p.Name})
 			return
 		}
-		writeRPC(w, msg.ID, s.callTool(r.Context(), tok, t, p.Arguments), nil)
+		writeRPC(w, msg.ID, s.callTool(r.Context(), tok, user, t, p.Arguments), nil)
 	default:
 		writeRPC(w, msg.ID, nil, &jsonrpcErr{-32601, "method not found: " + msg.Method})
 	}
@@ -165,12 +165,14 @@ func writeRPC(w http.ResponseWriter, id json.RawMessage, result any, e *jsonrpcE
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) mcpToken(r *http.Request) (*store.APIToken, error) {
+// mcpToken authenticates the request and returns the token and the user it
+// acts for, with the token's scope applied.
+func (s *Server) mcpToken(r *http.Request) (*store.APIToken, *store.User, error) {
 	auth := r.Header.Get("Authorization")
 	secret, ok := strings.CutPrefix(auth, "Bearer ")
 	secret = strings.TrimSpace(secret)
 	if !ok || !strings.HasPrefix(secret, store.TokenPrefix) || len(secret) > 200 {
-		return nil, errors.New("no token")
+		return nil, nil, errors.New("no token")
 	}
 	return s.store.APITokenBySecret(r.Context(), secret)
 }
@@ -227,8 +229,26 @@ type mcpCall struct {
 	s      *Server
 	ctx    context.Context
 	tok    *store.APIToken
+	user   *store.User // the token's owner, with the token's scope applied
+	tool   *mcpTool
 	args   json.RawMessage
 	target string // what the call acted on, for the audit log
+}
+
+// need is the project access level the current tool requires.
+func (c *mcpCall) need() int { return store.ScopeLevel(c.tool.scope) }
+
+// checkProject verifies the user may use the current tool on a project.
+// Projects the user can't see are reported as not found.
+func (c *mcpCall) checkProject(projectID int64, ref string) error {
+	l := c.s.level(c.ctx, c.user, projectID)
+	if l == store.LevelNone {
+		return fmt.Errorf("%q not found; call list_projects to see them", ref)
+	}
+	if l < c.need() {
+		return fmt.Errorf("your SimplePanel role (%s) can't use %s on %s; ask an admin", c.user.Role, c.tool.name, ref)
+	}
+	return nil
 }
 
 // bind decodes the arguments into v, rejecting unknown fields.
@@ -248,8 +268,8 @@ func (c *mcpCall) full() bool {
 	return store.ScopeRank(c.tok.Scope) >= store.ScopeRank(store.ScopeFull)
 }
 
-func (s *Server) callTool(ctx context.Context, tok *store.APIToken, t *mcpTool, args json.RawMessage) map[string]any {
-	c := &mcpCall{s: s, ctx: ctx, tok: tok, args: args}
+func (s *Server) callTool(ctx context.Context, tok *store.APIToken, user *store.User, t *mcpTool, args json.RawMessage) map[string]any {
+	c := &mcpCall{s: s, ctx: ctx, tok: tok, user: user, tool: t, args: args}
 	var (
 		res any
 		err error
@@ -265,7 +285,8 @@ func (s *Server) callTool(ctx context.Context, tok *store.APIToken, t *mcpTool, 
 			_ = json.Unmarshal(args, &ref)
 			c.target = cmpOr(ref.Service, ref.Project)
 		}
-		e := &store.AuditEntry{TokenID: &tok.ID, TokenName: tok.Name, Action: t.name, Target: c.target, Args: redactArgs(args), OK: err == nil}
+		e := &store.AuditEntry{Source: "mcp", TokenID: &tok.ID, TokenName: tok.Name, UserID: &user.ID, Username: user.Username,
+			Action: t.name, Target: c.target, Args: redactArgs(args), OK: err == nil}
 		if err != nil {
 			e.Error = truncate(err.Error(), 500)
 		}
@@ -358,7 +379,7 @@ func (c *mcpCall) invoke(h func(http.ResponseWriter, *http.Request, *store.User)
 		req.SetPathValue(k, v)
 	}
 	rec := httptest.NewRecorder()
-	h(rec, req, nil)
+	h(rec, req, c.user)
 	out := rec.Body.Bytes()
 	if rec.Code >= 400 {
 		var e struct {
@@ -379,23 +400,29 @@ func (c *mcpCall) project(ref string) (*store.Project, error) {
 	if ref == "" {
 		return nil, errors.New("project is required")
 	}
+	var p *store.Project
 	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
-		p, err := c.s.store.Project(c.ctx, id)
-		if err != nil {
+		if p, err = c.s.store.Project(c.ctx, id); err != nil {
 			return nil, fmt.Errorf("project %s not found", ref)
 		}
-		return p, nil
-	}
-	ps, err := c.s.store.Projects(c.ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range ps {
-		if ps[i].Name == strings.ToLower(ref) {
-			return &ps[i], nil
+	} else {
+		ps, err := c.s.store.Projects(c.ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range ps {
+			if ps[i].Name == strings.ToLower(ref) {
+				p = &ps[i]
+			}
 		}
 	}
-	return nil, fmt.Errorf("project %q not found; call list_projects to see them", ref)
+	if p == nil {
+		return nil, fmt.Errorf("project %q not found; call list_projects to see them", ref)
+	}
+	if err := c.checkProject(p.ID, p.Name); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // service resolves "project/name", a numeric id, or a bare name that is
@@ -411,9 +438,18 @@ func (c *mcpCall) service(ref string) (*store.App, error) {
 			return nil, fmt.Errorf("service %s not found", ref)
 		}
 	} else if pname, name, ok := strings.Cut(ref, "/"); ok {
-		p, err := c.project(pname)
+		ps, err := c.s.store.Projects(c.ctx)
 		if err != nil {
 			return nil, err
+		}
+		var p *store.Project
+		for i := range ps {
+			if ps[i].Name == strings.ToLower(pname) {
+				p = &ps[i]
+			}
+		}
+		if p == nil {
+			return nil, fmt.Errorf("service %q not found; call list_projects to see them", ref)
 		}
 		apps, err := c.s.store.Apps(c.ctx, p.ID)
 		if err != nil {
@@ -436,7 +472,7 @@ func (c *mcpCall) service(ref string) (*store.App, error) {
 				return nil, err
 			}
 			for _, x := range apps {
-				if x.Name == strings.ToLower(ref) {
+				if x.Name == strings.ToLower(ref) && c.s.level(c.ctx, c.user, x.ProjectID) > store.LevelNone {
 					found = append(found, x)
 				}
 			}
@@ -450,6 +486,9 @@ func (c *mcpCall) service(ref string) (*store.App, error) {
 	}
 	if a == nil {
 		return nil, fmt.Errorf("service %q not found; call list_projects to see them", ref)
+	}
+	if err := c.checkProject(a.ProjectID, ref); err != nil {
+		return nil, err
 	}
 	c.target = a.ProjectName + "/" + a.Name
 	return a, nil
@@ -563,6 +602,8 @@ var appFieldProps = map[string]any{
 	"cpu_limit":     prop("number", "CPU cores limit, 0 for none."),
 	"memory_mb":     prop("integer", "Memory limit in MB, 0 for none."),
 	"command":       prop("string", "Override the image's command. Empty uses the default."),
+	"auto_domain":   prop("boolean", "Give the app an automatic subdomain (name-project.<wildcard domain>) when a wildcard domain is set. Default true for apps."),
+	"http_port":     prop("integer", "Container port the automatic subdomain sends traffic to. 0 uses the first domain's port, or 80."),
 	"volumes": map[string]any{
 		"type": "array", "description": "Named volumes that keep data across deploys. Replaces the whole list.",
 		"items": map[string]any{"type": "object", "properties": map[string]any{
@@ -598,6 +639,8 @@ type appFields struct {
 	Command      *string        `json:"command"`
 	Volumes      []store.Volume `json:"volumes"`
 	Ports        []store.Port   `json:"ports"`
+	AutoDomain   *bool          `json:"auto_domain"`
+	HTTPPort     *int           `json:"http_port"`
 }
 
 // inputFrom starts an appInput from the app's current settings, then
@@ -645,6 +688,7 @@ func inputFrom(a *store.App, f *appFields) appInput {
 	if f.Ports != nil {
 		in.Ports = f.Ports
 	}
+	in.AutoDomain, in.HTTPPort = f.AutoDomain, f.HTTPPort
 	return in
 }
 
@@ -718,7 +762,7 @@ func init() {
 			name: "list_projects", title: "List projects and services", scope: store.ScopeRead, readOnly: true,
 			description: "Lists every project with its services (apps and databases), their status and domains. Start here.",
 			run: func(c *mcpCall) (any, error) {
-				ps, err := c.s.store.Projects(c.ctx)
+				ps, err := c.s.visibleProjects(c.ctx, c.user)
 				if err != nil {
 					return nil, err
 				}
@@ -759,6 +803,14 @@ func init() {
 				}
 				cfg := map[string]any{"source": app.Source, "replicas": app.Replicas, "cpuLimit": app.CPULimit, "memoryMb": app.MemoryMB,
 					"command": app.Command, "volumes": app.Volumes, "ports": app.Ports}
+				if !app.IsDatabase() {
+					cfg["autoDomain"] = app.AutoDomain
+					if wd, _ := c.s.store.Setting(c.ctx, "wildcard_domain"); wd != "" {
+						if h := deploy.AutoHost(app, wd); h != "" {
+							cfg["autoHost"] = h
+						}
+					}
+				}
 				if app.Source == "image" {
 					cfg["image"] = app.Image
 				} else {
@@ -921,7 +973,7 @@ func init() {
 					store.ScopeManage: "View, plus create, configure and deploy services.",
 					store.ScopeFull:   "Manage, plus delete services and projects.",
 				}
-				ps, err := c.s.store.Projects(c.ctx)
+				ps, err := c.s.visibleProjects(c.ctx, c.user)
 				if err != nil {
 					return nil, err
 				}
@@ -938,8 +990,16 @@ func init() {
 						}
 					}
 				}
+				projects := []map[string]any{}
+				names := map[int]string{store.LevelView: "view", store.LevelDeploy: "deploy", store.LevelManage: "manage"}
+				for _, p := range ps {
+					projects = append(projects, map[string]any{"project": p.Name, "access": names[c.s.level(c.ctx, c.user, p.ID)]})
+				}
 				return map[string]any{
 					"token": c.tok.Name, "scope": c.tok.Scope, "allows": allows[c.tok.Scope],
+					"user": c.user.Username, "role": c.user.Role, "projects": projects,
+					"roleNote": "What you can do is the lower of the token's scope and the user's role on each project " +
+						"(view: read only; deploy: create, configure, deploy and back up; manage: also delete and restore over data).",
 					"secrets":   "Never available: environment values, database passwords, access tokens and webhook URLs. Ask the user for them.",
 					"databases": dbs,
 					"databaseNote": "db_query, db_list_tables and db_describe_table work only on databases with aiReadAccess true. " +
@@ -1471,4 +1531,5 @@ func init() {
 			},
 		},
 	}
+	mcpTools = append(mcpTools, v02Tools()...)
 }

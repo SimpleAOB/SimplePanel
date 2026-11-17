@@ -3,6 +3,7 @@ module github.com/SimpleAOB/SimplePanel
 go 1.26.0
 
 require (
+	filippo.io/age v1.2.1
 	golang.org/x/crypto v0.59.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.62.0

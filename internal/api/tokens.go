@@ -10,8 +10,13 @@ import (
 
 // ---- API tokens (for the MCP endpoint) ----
 
-func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	ts, err := s.store.APITokens(r.Context())
+// listTokens lists the user's own tokens; owners and admins see everyone's.
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, u *store.User) {
+	var only int64
+	if !u.IsAdmin() {
+		only = u.ID
+	}
+	ts, err := s.store.APITokens(r.Context(), only)
 	if err != nil {
 		s.storeErr(w, err)
 		return
@@ -19,7 +24,11 @@ func (s *Server) listTokens(w http.ResponseWriter, r *http.Request, _ *store.Use
 	writeJSON(w, 200, ts)
 }
 
-func (s *Server) createToken(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) createToken(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if u.Scope != "" {
+		writeErr(w, 403, "API tokens can't create tokens")
+		return
+	}
 	var body struct {
 		Name  string `json:"name"`
 		Scope string `json:"scope"`
@@ -36,35 +45,49 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, _ *store.Us
 		writeErr(w, 400, `scope must be "read", "manage" or "full"`)
 		return
 	}
-	t, secret, err := s.store.CreateAPIToken(r.Context(), body.Name, body.Scope)
+	t, secret, err := s.store.CreateAPIToken(r.Context(), body.Name, body.Scope, u)
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
-	s.log.Info("API token created", "name", t.Name, "scope", t.Scope)
+	s.log.Info("API token created", "name", t.Name, "scope", t.Scope, "user", u.Username)
 	// The secret is only ever returned here.
 	writeJSON(w, 201, map[string]any{"token": t, "secret": secret})
 }
 
-func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
 		return
 	}
-	if err := s.store.DeleteAPIToken(r.Context(), id); err != nil {
+	var only int64
+	if !u.IsAdmin() {
+		only = u.ID
+	}
+	if err := s.store.DeleteAPIToken(r.Context(), id, only); err != nil {
 		s.storeErr(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ *store.User) {
+// listAudit shows the activity log: everyone's for owners and admins, the
+// user's own otherwise. ?source=ui|mcp filters it.
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, u *store.User) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	es, err := s.store.Audit(r.Context(), limit)
+	var only int64
+	if !u.IsAdmin() {
+		only = u.ID
+	}
+	source := r.URL.Query().Get("source")
+	if source != "ui" && source != "mcp" {
+		source = ""
+	}
+	es, err := s.store.Audit(r.Context(), limit, only, source)
 	if err != nil {
 		s.storeErr(w, err)
 		return
@@ -73,8 +96,8 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ *store.User
 }
 
 // setAIAccess turns AI read-only access to a database on or off.
-func (s *Server) setAIAccess(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) setAIAccess(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}

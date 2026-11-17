@@ -21,6 +21,10 @@ import (
 
 func (s *Server) system(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	out := map[string]any{"version": s.version}
+	wd, _ := s.store.Setting(r.Context(), "wildcard_domain")
+	out["wildcardDomain"] = wd
+	zone, _ := time.Now().Zone()
+	out["timezone"] = zone
 	if info, err := s.docker.Info(r.Context()); err == nil {
 		out["docker"] = info.ServerVersion
 		out["swarm"] = info.Swarm.LocalNodeState
@@ -32,44 +36,81 @@ func (s *Server) system(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if !requireAdmin(w, u) {
+		return
+	}
 	var body struct {
-		PanelDomain string `json:"panelDomain"`
+		PanelDomain    *string `json:"panelDomain"`
+		WildcardDomain *string `json:"wildcardDomain"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	body.PanelDomain = strings.TrimSpace(strings.ToLower(body.PanelDomain))
-	if body.PanelDomain != "" {
-		if err := deploy.ValidHost(body.PanelDomain); err != nil {
-			writeErr(w, 400, err.Error())
+	out := map[string]string{}
+	if body.PanelDomain != nil {
+		pd := strings.TrimSpace(strings.ToLower(*body.PanelDomain))
+		if pd != "" {
+			if err := deploy.ValidHost(pd); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+		}
+		if err := s.store.SetSetting(r.Context(), "panel_domain", pd); err != nil {
+			s.storeErr(w, err)
 			return
 		}
+		out["panelDomain"] = pd
 	}
-	if err := s.store.SetSetting(r.Context(), "panel_domain", body.PanelDomain); err != nil {
-		s.storeErr(w, err)
-		return
+	if body.WildcardDomain != nil {
+		wd := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(*body.WildcardDomain)), "*.")
+		if wd != "" {
+			if err := deploy.ValidHost(wd); err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			if strings.Count(wd, ".") < 1 {
+				writeErr(w, 400, "use a domain you control, such as apps.example.com")
+				return
+			}
+		}
+		if err := s.store.SetSetting(r.Context(), "wildcard_domain", wd); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		out["wildcardDomain"] = wd
 	}
 	if err := s.deploy.SyncProxy(r.Context()); err != nil {
 		s.log.Error("proxy sync", "err", err)
 		writeErr(w, 500, "saved, but updating the proxy failed: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"panelDomain": body.PanelDomain})
+	writeJSON(w, 200, out)
 }
 
 // ---- Projects ----
 
-func (s *Server) listProjects(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	ps, err := s.store.Projects(r.Context())
+func (s *Server) listProjects(w http.ResponseWriter, r *http.Request, u *store.User) {
+	ps, err := s.visibleProjects(r.Context(), u)
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, ps)
+	type row struct {
+		store.Project
+		Level int `json:"level"`
+	}
+	out := make([]row, len(ps))
+	for i, p := range ps {
+		out[i] = row{p, s.level(r.Context(), u, p.ID)}
+	}
+	writeJSON(w, 200, out)
 }
 
-func (s *Server) createProject(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if !requireAdminScope(w, u, store.ScopeManage) {
+		return
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -93,10 +134,13 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request, _ *store.
 	writeJSON(w, 201, p)
 }
 
-func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
+		return
+	}
+	if !s.allow(w, r, u, id, store.LevelManage) || !requireAdmin(w, u) {
 		return
 	}
 	apps, err := s.store.Apps(r.Context(), id)
@@ -126,10 +170,13 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, _ *store.
 
 // ---- Apps ----
 
-func (s *Server) listApps(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) listApps(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
+		return
+	}
+	if !s.allow(w, r, u, id, store.LevelView) {
 		return
 	}
 	apps, err := s.store.Apps(r.Context(), id)
@@ -142,7 +189,11 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request, _ *store.User)
 		Status deploy.Status `json:"status"`
 	}
 	out := make([]row, len(apps))
+	secrets := s.level(r.Context(), u, id) >= store.LevelDeploy
 	for i := range apps {
+		if !secrets {
+			redactApp(&apps[i])
+		}
 		out[i] = row{App: apps[i], Status: s.deploy.Status(r.Context(), &apps[i])}
 	}
 	writeJSON(w, 200, out)
@@ -172,6 +223,8 @@ type appInput struct {
 	Command       string         `json:"command"`
 	Volumes       []store.Volume `json:"volumes"`
 	Ports         []store.Port   `json:"ports"`
+	AutoDomain    *bool          `json:"autoDomain"`
+	HTTPPort      *int           `json:"httpPort"`
 }
 
 // apply validates in and copies it onto a.
@@ -279,6 +332,17 @@ func (in *appInput) apply(a *store.App) error {
 		seenVol[v.Name] = true
 		a.Volumes = append(a.Volumes, v)
 	}
+	if in.AutoDomain != nil {
+		a.AutoDomain = *in.AutoDomain && !a.IsDatabase()
+	} else if a.ID == 0 {
+		a.AutoDomain = !a.IsDatabase()
+	}
+	if in.HTTPPort != nil {
+		if *in.HTTPPort != 0 && deploy.ValidPort(*in.HTTPPort) != nil {
+			return errors.New("HTTP port must be between 1 and 65535")
+		}
+		a.HTTPPort = *in.HTTPPort
+	}
 	a.Ports = []store.Port{}
 	for _, p := range in.Ports {
 		if p.Protocol == "" {
@@ -298,10 +362,13 @@ func (in *appInput) apply(a *store.App) error {
 	return nil
 }
 
-func (s *Server) createApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) createApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	pid, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
+		return
+	}
+	if !s.allow(w, r, u, pid, store.LevelDeploy) {
 		return
 	}
 	p, err := s.store.Project(r.Context(), pid)
@@ -331,6 +398,9 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request, _ *store.User
 		s.storeErr(w, err)
 		return
 	}
+	if a.AutoDomain {
+		_ = s.deploy.SyncProxy(r.Context())
+	}
 	writeJSON(w, 201, a)
 }
 
@@ -338,10 +408,13 @@ func (s *Server) listEngines(w http.ResponseWriter, r *http.Request, _ *store.Us
 	writeJSON(w, 200, deploy.Engines)
 }
 
-func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store.User) {
 	pid, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
+		return
+	}
+	if !s.allow(w, r, u, pid, store.LevelDeploy) {
 		return
 	}
 	p, err := s.store.Project(r.Context(), pid)
@@ -398,49 +471,89 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, _ *store
 	writeJSON(w, 201, map[string]any{"app": a, "deployment": d})
 }
 
-func (s *Server) loadApp(w http.ResponseWriter, r *http.Request) (*store.App, bool) {
+// loadApp loads the app named by the {id} path value and checks that u
+// has at least level need on its project.
+func (s *Server) loadApp(w http.ResponseWriter, r *http.Request, u *store.User, need int) (*store.App, bool) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
 		return nil, false
 	}
+	return s.loadAppID(w, r, u, id, need)
+}
+
+func (s *Server) loadAppID(w http.ResponseWriter, r *http.Request, u *store.User, id int64, need int) (*store.App, bool) {
 	a, err := s.store.App(r.Context(), id)
 	if err != nil {
 		s.storeErr(w, err)
 		return nil, false
 	}
+	if !s.allow(w, r, u, a.ProjectID, need) {
+		return nil, false
+	}
 	return a, true
 }
 
-func (s *Server) getApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+// redactApp removes values only users who can deploy may see: environment
+// variable values (names are kept) and Git tokens.
+func redactApp(a *store.App) {
+	var keys []string
+	for _, k := range envKeys(a.Env) {
+		keys = append(keys, k+"=")
+	}
+	a.Env = strings.Join(keys, "\n")
+	if a.Env != "" {
+		a.Env += "\n"
+	}
+}
+
+func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelView)
 	if !ok {
 		return
 	}
+	lvl := s.level(r.Context(), u, a.ProjectID)
 	domains, err := s.store.Domains(r.Context(), a.ID)
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
+	wd, _ := s.store.Setting(r.Context(), "wildcard_domain")
 	out := map[string]any{
 		"app":         a,
 		"domains":     domains,
 		"status":      s.deploy.Status(r.Context(), a),
-		"webhookPath": "/api/hooks/deploy/" + a.WebhookToken,
 		"serviceName": a.ServiceName(),
+		"level":       lvl,
+		"autoHost":    deploy.AutoHost(a, wd),
+		"autoPort":    s.deploy.AutoPort(r.Context(), a),
+		"backupKind":  deploy.BackupKind(a),
+	}
+	if lvl >= store.LevelDeploy {
+		out["webhookPath"] = "/api/hooks/deploy/" + a.WebhookToken
 	}
 	if a.IsDatabase() {
-		out["database"] = deploy.DatabaseInfo(a)
+		info := deploy.DatabaseInfo(a)
+		if lvl < store.LevelDeploy && info != nil {
+			scheme, _, _ := strings.Cut(info.URL, "://")
+			info.Password, info.RootPassword = "", ""
+			info.URL = fmt.Sprintf("%s://%s:<password>@%s:%d/%s", scheme, info.User, info.Host, info.Port, info.Database)
+		}
+		out["database"] = info
 		out["aiAccess"], _, _ = s.store.AIAccess(r.Context(), a.ID)
+	}
+	if lvl < store.LevelDeploy {
+		redactApp(a)
 	}
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}
+	prevAuto, prevPort := a.AutoDomain, a.HTTPPort
 	var in appInput
 	if !readJSON(w, r, &in) {
 		return
@@ -453,11 +566,16 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, _ *store.User
 		s.storeErr(w, err)
 		return
 	}
+	if a.AutoDomain != prevAuto || a.HTTPPort != prevPort {
+		if err := s.deploy.SyncProxy(r.Context()); err != nil {
+			s.log.Error("proxy sync", "err", err)
+		}
+	}
 	writeJSON(w, 200, a)
 }
 
-func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelManage)
 	if !ok {
 		return
 	}
@@ -473,8 +591,8 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request, _ *store.User
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) deployApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) deployApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}
@@ -498,26 +616,26 @@ func (s *Server) dockerAction(w http.ResponseWriter, err error) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) restartApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	if a, ok := s.loadApp(w, r); ok {
+func (s *Server) restartApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if a, ok := s.loadApp(w, r, u, store.LevelDeploy); ok {
 		s.dockerAction(w, s.deploy.Restart(r.Context(), a))
 	}
 }
 
-func (s *Server) stopApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	if a, ok := s.loadApp(w, r); ok {
+func (s *Server) stopApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if a, ok := s.loadApp(w, r, u, store.LevelDeploy); ok {
 		s.dockerAction(w, s.deploy.Scale(r.Context(), a, 0))
 	}
 }
 
-func (s *Server) startApp(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	if a, ok := s.loadApp(w, r); ok {
+func (s *Server) startApp(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if a, ok := s.loadApp(w, r, u, store.LevelDeploy); ok {
 		s.dockerAction(w, s.deploy.Scale(r.Context(), a, uint64(max(a.Replicas, 1))))
 	}
 }
 
-func (s *Server) appLogs(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) appLogs(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelView)
 	if !ok {
 		return
 	}
@@ -539,13 +657,12 @@ func (s *Server) appLogs(w http.ResponseWriter, r *http.Request, _ *store.User) 
 	writeJSON(w, 200, map[string]string{"logs": logs})
 }
 
-func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	id, ok := pathID(r)
+func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelView)
 	if !ok {
-		writeErr(w, 400, "bad id")
 		return
 	}
-	ds, err := s.store.Deployments(r.Context(), id, 30)
+	ds, err := s.store.Deployments(r.Context(), a.ID, 30)
 	if err != nil {
 		s.storeErr(w, err)
 		return
@@ -553,7 +670,7 @@ func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request, _ *stor
 	writeJSON(w, 200, ds)
 }
 
-func (s *Server) getDeployment(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) getDeployment(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
@@ -564,13 +681,16 @@ func (s *Server) getDeployment(w http.ResponseWriter, r *http.Request, _ *store.
 		s.storeErr(w, err)
 		return
 	}
+	if _, ok := s.loadAppID(w, r, u, d.AppID, store.LevelView); !ok {
+		return
+	}
 	writeJSON(w, 200, d)
 }
 
 // ---- Domains ----
 
-func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}
@@ -599,6 +719,10 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, _ *store.U
 		writeErr(w, 409, "that domain is used by the panel itself")
 		return
 	}
+	if wd, _ := s.store.Setting(r.Context(), "wildcard_domain"); wd != "" && d.Host == wd {
+		writeErr(w, 409, "that is the wildcard domain for automatic subdomains; use a subdomain of it")
+		return
+	}
 	if err := s.store.CreateDomain(r.Context(), &d); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeErr(w, 409, "that domain is already in use")
@@ -613,14 +737,18 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, _ *store.U
 	writeJSON(w, 201, d)
 }
 
-func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
 		return
 	}
-	if _, err := s.store.Domain(r.Context(), id); err != nil {
+	d, err := s.store.Domain(r.Context(), id)
+	if err != nil {
 		s.storeErr(w, err)
+		return
+	}
+	if _, ok := s.loadAppID(w, r, u, d.AppID, store.LevelDeploy); !ok {
 		return
 	}
 	if err := s.store.DeleteDomain(r.Context(), id); err != nil {
@@ -633,8 +761,8 @@ func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request, _ *store.U
 
 // ---- Webhooks ----
 
-func (s *Server) rotateWebhook(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) rotateWebhook(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}

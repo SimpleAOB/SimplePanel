@@ -51,7 +51,14 @@ func (s *Server) requireAuth(h func(http.ResponseWriter, *http.Request, *store.U
 			writeErr(w, 401, "not signed in")
 			return
 		}
-		h(w, r, u)
+		if _, logged := activityActions[r.Pattern]; !logged {
+			h(w, r, u)
+			return
+		}
+		target := s.activityTarget(r)
+		sw := &statusWriter{ResponseWriter: w}
+		h(sw, r, u)
+		s.recordActivity(r, u, target, sw.code)
 	})
 }
 
@@ -126,6 +133,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "wrong username or password")
 		return
 	}
+	if hash == "" { // invited, hasn't set a password yet
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
+		writeErr(w, 401, "wrong username or password")
+		return
+	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil {
 		s.log.Warn("failed login", "ip", ip)
 		writeErr(w, 401, "wrong username or password")
@@ -151,6 +163,10 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request, u *store.User) {
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *store.User) {
+	if u.Scope != "" {
+		writeErr(w, 403, "not available to API tokens")
+		return
+	}
 	var body struct {
 		Current string `json:"current"`
 		New     string `json:"new"`

@@ -35,6 +35,8 @@ type Config struct {
 	// EndpointMode is "vip" (default, uses IPVS) or "dnsrr" for kernels
 	// without IPVS support (some LXC/OpenVZ VPSes).
 	EndpointMode string
+	// HelperImage runs short-lived volume backup and restore containers.
+	HelperImage string
 }
 
 type Manager struct {
@@ -48,6 +50,9 @@ type Manager struct {
 	builds   chan struct{} // limits concurrent builds
 	proxyMu  sync.Mutex
 	netMu    sync.Mutex // serialises project network creation
+
+	// OnDeploy, if set, is called when a deployment finishes.
+	OnDeploy func(app *store.App, d *store.Deployment)
 }
 
 func NewManager(cfg Config, st *store.Store, dc *docker.Client, log *slog.Logger) *Manager {
@@ -165,13 +170,26 @@ func (m *Manager) run(appID, depID int64) {
 		return m.SyncProxy(ctx)
 	}()
 	close(stop)
+	status := "succeeded"
 	if err != nil {
 		lb.Printf("Deployment failed: %v", err)
-		save("failed", true)
-		return
+		status = "failed"
+	} else {
+		lb.Printf("Deployment succeeded")
 	}
-	lb.Printf("Deployment succeeded")
-	save("succeeded", true)
+	save(status, true)
+	if m.OnDeploy != nil {
+		if app, aerr := m.store.App(bg, appID); aerr == nil {
+			d, _ := m.store.Deployment(bg, depID)
+			if d == nil {
+				d = &store.Deployment{ID: depID, Status: status}
+			}
+			if err != nil {
+				d.Log = err.Error() // the reason, not the whole log
+			}
+			m.OnDeploy(app, d)
+		}
+	}
 }
 
 func (m *Manager) pullImage(ctx context.Context, app *store.App, lb *logBuf) (string, error) {
@@ -648,14 +666,67 @@ func (m *Manager) SyncProxy(ctx context.Context) error {
 		return err
 	}
 	var rs []proxy.Route
+	taken := map[string]bool{}
+	firstPort := map[int64]int{}
 	for _, r := range routes {
 		rs = append(rs, proxy.Route{Key: fmt.Sprintf("d%d", r.ID), Host: r.Host, Service: r.Service, Port: r.Port, HTTPS: r.HTTPS})
+		taken[r.Host] = true
+		if _, ok := firstPort[r.AppID]; !ok {
+			firstPort[r.AppID] = r.Port
+		}
 	}
 	panelHost, _ := m.store.Setting(ctx, "panel_domain")
 	if panelHost != "" && m.cfg.PanelSvc != "" {
 		rs = append(rs, proxy.Route{Key: "panel", Host: panelHost, Service: m.cfg.PanelSvc, Port: m.cfg.PanelPort, HTTPS: true})
+		taken[panelHost] = true
+	}
+	if base, _ := m.store.Setting(ctx, "wildcard_domain"); base != "" {
+		apps, err := m.store.Apps(ctx, 0)
+		if err != nil {
+			return err
+		}
+		for i := range apps {
+			a := &apps[i]
+			host := AutoHost(a, base)
+			if host == "" || taken[host] {
+				continue
+			}
+			port := a.HTTPPort
+			if port == 0 {
+				port = firstPort[a.ID]
+			}
+			if port == 0 {
+				port = 80
+			}
+			rs = append(rs, proxy.Route{Key: fmt.Sprintf("a%d", a.ID), Host: host, Service: a.ServiceName(), Port: port, HTTPS: true})
+		}
 	}
 	return proxy.Write(m.cfg.ProxyDir, rs)
+}
+
+// AutoHost is the automatic subdomain of an app under the wildcard domain
+// base ("" when the app has none): <app>-<project>.<base>.
+func AutoHost(a *store.App, base string) string {
+	if base == "" || !a.AutoDomain || a.IsDatabase() {
+		return ""
+	}
+	return a.Name + "-" + a.ProjectName + "." + base
+}
+
+// AutoPort is the port an app's automatic subdomain routes to.
+func (m *Manager) AutoPort(ctx context.Context, a *store.App) int {
+	if a.HTTPPort > 0 {
+		return a.HTTPPort
+	}
+	port, first := 80, int64(0)
+	if ds, err := m.store.Domains(ctx, a.ID); err == nil {
+		for _, d := range ds { // the oldest domain, as SyncProxy does
+			if first == 0 || d.ID < first {
+				port, first = d.Port, d.ID
+			}
+		}
+	}
+	return port
 }
 
 // SplitCommand splits a command line like a POSIX shell would for simple

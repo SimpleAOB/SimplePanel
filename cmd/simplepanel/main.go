@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,8 +14,11 @@ import (
 	"time"
 
 	"github.com/SimpleAOB/SimplePanel/internal/api"
+	"github.com/SimpleAOB/SimplePanel/internal/backup"
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/docker"
+	"github.com/SimpleAOB/SimplePanel/internal/monitor"
+	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 	"github.com/SimpleAOB/SimplePanel/internal/web"
 )
@@ -73,6 +77,11 @@ func run(log *slog.Logger) error {
 	if err := st.FailStaleDeployments(ctx); err != nil {
 		return err
 	}
+	if err := st.FailStaleBackups(ctx); err != nil {
+		return err
+	}
+	tmpDir := filepath.Join(dataDir, "tmp")
+	_ = os.RemoveAll(tmpDir) // leftovers from an interrupted backup
 
 	dm := deploy.NewManager(deploy.Config{
 		Network:      env("SP_NETWORK", "simplepanel"),
@@ -81,12 +90,39 @@ func run(log *slog.Logger) error {
 		PanelSvc:     env("SP_PANEL_SERVICE", "simplepanel"),
 		PanelPort:    3000,
 		EndpointMode: env("SP_ENDPOINT_MODE", "vip"),
+		HelperImage:  env("SP_HELPER_IMAGE", deploy.DefaultHelperImage),
 	}, st, dc, log)
+
+	notifier := notify.New(st, log)
+	notifier.BaseURL = func() string {
+		if pd, _ := st.Setting(context.Background(), "panel_domain"); pd != "" {
+			return "https://" + pd
+		}
+		return env("SP_PUBLIC_URL", "")
+	}
+	dm.OnDeploy = func(app *store.App, d *store.Deployment) {
+		ev := notify.Event{ProjectID: app.ProjectID, Project: app.ProjectName, Service: app.Name,
+			Link: fmt.Sprintf("/#/p/%d/a/%d/deployments", app.ProjectID, app.ID)}
+		if d.Status == "failed" {
+			ev.Type, ev.Level = notify.DeployFailed, "error"
+			ev.Title = fmt.Sprintf("Deploy of %s/%s failed", app.ProjectName, app.Name)
+			ev.Message = fmt.Sprintf("Deployment #%d (%s): %s", d.ID, d.Trigger, d.Log)
+		} else {
+			ev.Type, ev.Level = notify.DeploySucceeded, "success"
+			ev.Title = fmt.Sprintf("%s/%s deployed", app.ProjectName, app.Name)
+			ev.Message = fmt.Sprintf("Deployment #%d (%s) is live.", d.ID, d.Trigger)
+		}
+		notifier.Send(ev)
+	}
+	backups := backup.New(st, dm, notifier, log, tmpDir)
+	backups.Start(ctx)
+	mon := monitor.New(monitor.Config{ProcDir: os.Getenv("SP_PROC_DIR"), DiskPath: dataDir}, st, dc, dm, notifier, log)
+	mon.Start(ctx)
 	if err := dm.SyncProxy(ctx); err != nil {
 		log.Warn("could not write proxy config", "err", err)
 	}
 
-	srv := api.New(st, dc, dm, web.FS(), log, version)
+	srv := api.New(st, dc, dm, web.FS(), log, version).Use(backups, mon, notifier)
 	srv.StartJanitor(ctx)
 
 	hs := &http.Server{

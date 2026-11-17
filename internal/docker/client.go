@@ -29,6 +29,7 @@ const maxAPIVersion = "1.47"
 type Client struct {
 	http    *http.Client
 	version string
+	socket  string
 }
 
 // ErrNotFound is returned when Docker answers 404.
@@ -52,7 +53,7 @@ func New(socketPath string) *Client {
 		MaxIdleConns:    10,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	return &Client{http: &http.Client{Transport: tr}, version: maxAPIVersion}
+	return &Client{http: &http.Client{Transport: tr}, version: maxAPIVersion, socket: socketPath}
 }
 
 // Negotiate picks the lower of the daemon's API version and ours.
@@ -147,6 +148,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, q url.Values, 
 // Info is the subset of /info we use.
 type Info struct {
 	ServerVersion string
+	NCPU          int
+	MemTotal      int64
+	DockerRootDir string
 	Swarm         struct {
 		LocalNodeState   string
 		ControlAvailable bool
@@ -355,9 +359,10 @@ type ContainerSpec struct {
 }
 
 type Mount struct {
-	Type   string `json:"Type"`
-	Source string `json:"Source"`
-	Target string `json:"Target"`
+	Type     string `json:"Type"`
+	Source   string `json:"Source"`
+	Target   string `json:"Target"`
+	ReadOnly bool   `json:"ReadOnly,omitempty"`
 }
 
 type Resources struct {

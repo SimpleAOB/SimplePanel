@@ -50,6 +50,8 @@ type exportService struct {
 	Ports      []store.Port   `json:"ports,omitempty"`
 	Domains    []exportDomain `json:"domains,omitempty"`
 	GitPrivate bool           `json:"gitPrivate,omitempty"` // a token was set; add it again after import
+	AutoDomain *bool          `json:"autoDomain,omitempty"` // only exported when turned off
+	HTTPPort   int            `json:"httpPort,omitempty"`
 }
 
 type exportGit struct {
@@ -72,7 +74,11 @@ type exportDomain struct {
 
 func (s *Server) exportService(r *http.Request, a *store.App, withEnv bool) (exportService, error) {
 	es := exportService{Name: a.Name, Type: orApp(a.Kind), Image: a.Image,
-		CPULimit: a.CPULimit, MemoryMB: a.MemoryMB, Command: a.Command, Ports: a.Ports}
+		CPULimit: a.CPULimit, MemoryMB: a.MemoryMB, Command: a.Command, Ports: a.Ports, HTTPPort: a.HTTPPort}
+	if !a.AutoDomain && !a.IsDatabase() {
+		off := false
+		es.AutoDomain = &off
+	}
 	if a.IsDatabase() {
 		e := deploy.EngineByKey(a.Kind)
 		if e != nil {
@@ -123,10 +129,13 @@ func writeExport(w http.ResponseWriter, doc exportDoc, filename string) {
 	writeJSON(w, 200, doc)
 }
 
-func (s *Server) exportProjectHandler(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) exportProjectHandler(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
 		writeErr(w, 400, "bad id")
+		return
+	}
+	if !s.allow(w, r, u, id, store.LevelView) {
 		return
 	}
 	p, err := s.store.Project(r.Context(), id)
@@ -140,6 +149,9 @@ func (s *Server) exportProjectHandler(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	withEnv := r.URL.Query().Get("env") == "1"
+	if withEnv && !s.allow(w, r, u, id, store.LevelDeploy) {
+		return
+	}
 	ep := &exportProject{Name: p.Name, Services: []exportService{}}
 	for i := range apps {
 		es, err := s.exportService(r, &apps[i], withEnv)
@@ -152,12 +164,17 @@ func (s *Server) exportProjectHandler(w http.ResponseWriter, r *http.Request, _ 
 	writeExport(w, exportDoc{Kind: "project", Project: ep}, p.Name)
 }
 
-func (s *Server) exportAppHandler(w http.ResponseWriter, r *http.Request, _ *store.User) {
-	a, ok := s.loadApp(w, r)
+func (s *Server) exportAppHandler(w http.ResponseWriter, r *http.Request, u *store.User) {
+	withEnv := r.URL.Query().Get("env") == "1"
+	need := store.LevelView
+	if withEnv {
+		need = store.LevelDeploy
+	}
+	a, ok := s.loadApp(w, r, u, need)
 	if !ok {
 		return
 	}
-	es, err := s.exportService(r, a, r.URL.Query().Get("env") == "1")
+	es, err := s.exportService(r, a, withEnv)
 	if err != nil {
 		s.storeErr(w, err)
 		return
@@ -263,7 +280,10 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 	}
 
 	in := appInput{Source: es.Source, Image: es.Image, Replicas: es.Replicas, CPULimit: es.CPULimit,
-		MemoryMB: es.MemoryMB, Command: es.Command, Volumes: es.Volumes, Ports: es.Ports}
+		MemoryMB: es.MemoryMB, Command: es.Command, Volumes: es.Volumes, Ports: es.Ports, AutoDomain: es.AutoDomain}
+	if es.HTTPPort != 0 {
+		in.HTTPPort = &es.HTTPPort
+	}
 	if es.Env != nil {
 		in.Env = *es.Env
 	}
@@ -300,7 +320,7 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 	return ps, nil
 }
 
-func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, _ *store.User) {
+func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, u *store.User) {
 	var req importRequest
 	if !readJSON(w, r, &req) {
 		return
@@ -321,6 +341,9 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, _ *store.
 		newName  string
 	)
 	if doc.Kind == "project" {
+		if !requireAdminScope(w, u, store.ScopeManage) {
+			return
+		}
 		newName = doc.Project.Name
 		if req.Name != "" {
 			newName = req.Name
@@ -333,6 +356,9 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, _ *store.
 	} else {
 		if req.ProjectID <= 0 {
 			writeErr(w, 400, "choose a project to import the service into")
+			return
+		}
+		if !s.allow(w, r, u, req.ProjectID, store.LevelDeploy) {
 			return
 		}
 		if project, err = s.store.Project(ctx, req.ProjectID); err != nil {
