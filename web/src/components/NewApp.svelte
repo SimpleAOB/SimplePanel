@@ -5,6 +5,7 @@
   import { emptyForm, payload } from '../lib/appform.js';
   import AppFields from './AppFields.svelte';
   import Topbar from './Topbar.svelte';
+  import Icon from './Icon.svelte';
 
   let form = $state(emptyForm());
   let domain = $state('');
@@ -14,6 +15,9 @@
   let project = $derived(data.projects.find((p) => p.id === ui.route.projectId));
   let kind = $state('app'); // app | database
   let engine = $state('postgres');
+  let dbUser = $state('');
+  let dbPassword = $state('');
+  let showPw = $state(false);
   let dbImage = $state('');
   let engines = $state([]);
 
@@ -35,6 +39,8 @@
       name: form.name.trim().toLowerCase(),
       engine,
       image: ui.advanced ? dbImage.trim() : '',
+      user: dbUser.trim(),
+      password: dbPassword,
     });
     await loadApps(pid);
     showDeployment(r.deployment.id);
@@ -104,9 +110,22 @@
         <small>Use a different version, for example postgres:16-alpine.</small>
       </label>
     {/if}
+    <div class="row">
+      <label class="field">
+        <span>Username <span class="opt">(optional)</span></span>
+        <input type="text" bind:value={dbUser} placeholder={(form.name || 'my-db').trim().toLowerCase().replace(/-/g, '_')} autocomplete="off" spellcheck="false" maxlength="32" />
+      </label>
+      <label class="field">
+        <span>Password <span class="opt">(optional)</span></span>
+        <div class="pw">
+          <input type={showPw ? 'text' : 'password'} bind:value={dbPassword} placeholder="Leave empty to generate" autocomplete="new-password" maxlength="128" />
+          <button type="button" class="btn ghost icon small" aria-label={showPw ? 'Hide password' : 'Show password'} title={showPw ? 'Hide password' : 'Show password'} onclick={() => (showPw = !showPw)}><Icon name="eye" size={16} /></button>
+        </div>
+      </label>
+    </div>
+    <small class="hint">Leave these empty and SimplePanel generates a username (from the name) and a strong random password. You can copy both from the database's page afterwards.</small>
     <p class="muted">
-      SimplePanel generates a user and password and stores data in a persistent volume. The database is only
-      reachable from apps in this project.
+      Data is stored in a persistent volume. The database is only reachable from apps in this project.
     </p>
   {:else}
   <AppFields bind:value={form} />
@@ -145,6 +164,26 @@
   }
   .kind {
     align-self: flex-start;
+  }
+  .opt {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
+    color: var(--sp-text-faint);
+  }
+  .pw {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+  }
+  .pw input {
+    flex: 1;
+    min-width: 0;
+  }
+  .hint {
+    margin-top: calc(-1 * var(--sp-space-2));
+    color: var(--sp-text-faint);
+    font-size: var(--sp-text-xs);
   }
   .engines {
     display: grid;

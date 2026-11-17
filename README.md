@@ -44,7 +44,8 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
   listings.
 - **Deploy a Docker image** from Docker Hub, GHCR or any registry.
 - **Domains with automatic HTTPS** via Let's Encrypt.
-- **Databases**: PostgreSQL, MySQL and MariaDB with generated credentials, a
+- **Databases**: PostgreSQL, MySQL and MariaDB with your own or generated
+  credentials, a
   persistent volume and a copyable connection URL. Databases are only
   reachable from apps in the same project.
 - **Zero-downtime deploys**: new containers start before old ones stop.

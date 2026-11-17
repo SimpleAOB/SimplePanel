@@ -350,9 +350,11 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, _ *store
 		return
 	}
 	var in struct {
-		Name   string `json:"name"`
-		Engine string `json:"engine"`
-		Image  string `json:"image"`
+		Name     string `json:"name"`
+		Engine   string `json:"engine"`
+		Image    string `json:"image"`
+		User     string `json:"user"`     // optional, generated if empty
+		Password string `json:"password"` // optional, generated if empty
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -367,7 +369,12 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, _ *store
 		writeErr(w, 400, "unknown database engine")
 		return
 	}
-	a := deploy.NewDatabaseApp(e, p.ID, p.Name, in.Name, store.RandomToken)
+	cred := deploy.DBCredentials{User: strings.TrimSpace(in.User), Password: in.Password}
+	if err := cred.Validate(e); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	a := deploy.NewDatabaseApp(e, p.ID, p.Name, in.Name, cred, store.RandomToken)
 	if in.Image = strings.TrimSpace(in.Image); in.Image != "" {
 		if err := deploy.ValidImage(in.Image); err != nil {
 			writeErr(w, 400, err.Error())

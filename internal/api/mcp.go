@@ -305,7 +305,7 @@ func redactArgs(raw json.RawMessage) string {
 			} else if v != nil {
 				m[k] = "•••"
 			}
-		case "git_token":
+		case "git_token", "password":
 			m[k] = "•••"
 		case "document":
 			m[k] = "(" + strconv.Itoa(len(fmt.Sprint(v))) + " characters)"
@@ -1117,18 +1117,22 @@ func init() {
 			name: "create_database", title: "Create a database", scope: store.ScopeManage, audit: true,
 			description: "Creates and starts a PostgreSQL, MySQL or MariaDB database with generated credentials and a persistent volume. Only apps in the same project can reach it.",
 			props: map[string]any{
-				"project": pProject,
-				"name":    prop("string", "Database service name, e.g. db. Apps connect to it by this name."),
-				"engine":  enumProp("Database engine.", "postgres", "mysql", "mariadb"),
-				"image":   prop("string", "Override the default image, e.g. postgres:16-alpine."),
+				"project":  pProject,
+				"name":     prop("string", "Database service name, e.g. db. Apps connect to it by this name."),
+				"engine":   enumProp("Database engine.", "postgres", "mysql", "mariadb"),
+				"image":    prop("string", "Override the default image, e.g. postgres:16-alpine."),
+				"user":     prop("string", "Username. Leave out to use the database name."),
+				"password": prop("string", "Password the user chose. Leave out to generate one; you won't be able to read it, so don't invent one."),
 			},
 			required: []string{"project", "name", "engine"},
 			run: func(c *mcpCall) (any, error) {
 				var a struct {
-					Project string `json:"project"`
-					Name    string `json:"name"`
-					Engine  string `json:"engine"`
-					Image   string `json:"image"`
+					Project  string `json:"project"`
+					Name     string `json:"name"`
+					Engine   string `json:"engine"`
+					Image    string `json:"image"`
+					User     string `json:"user"`
+					Password string `json:"password"`
 				}
 				if err := c.bind(&a); err != nil {
 					return nil, err
@@ -1139,7 +1143,7 @@ func init() {
 				}
 				c.target = p.Name + "/" + a.Name
 				raw, err := c.invoke(c.s.createDatabase, "POST", "/", map[string]string{"id": strconv.FormatInt(p.ID, 10)},
-					map[string]string{"name": a.Name, "engine": a.Engine, "image": a.Image})
+					map[string]string{"name": a.Name, "engine": a.Engine, "image": a.Image, "user": a.User, "password": a.Password})
 				if err != nil {
 					return nil, err
 				}

@@ -239,7 +239,7 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 		if es.Git != nil || es.Source == "git" || len(es.Domains) > 0 || len(es.Volumes) > 0 || es.Command != "" {
 			return fail(errors.New("databases only support image, env, cpuLimit, memoryMb and ports"))
 		}
-		a = deploy.NewDatabaseApp(e, projectID, projectName, name, store.RandomToken)
+		a = deploy.NewDatabaseApp(e, projectID, projectName, name, deploy.DBCredentials{}, store.RandomToken)
 		in := appInput{Source: "image", Image: a.Image, Env: a.Env, CPULimit: es.CPULimit, MemoryMB: es.MemoryMB,
 			Volumes: a.Volumes, Ports: es.Ports}
 		if es.Image != "" {

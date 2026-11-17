@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/SimpleAOB/SimplePanel/internal/store"
@@ -43,13 +45,56 @@ func EngineByKey(key string) *Engine {
 	return nil
 }
 
-// NewDatabaseApp returns a ready-to-save app for engine with generated
-// credentials and a persistent data volume.
-func NewDatabaseApp(e *Engine, projectID int64, projectName, name string, randomHex func(int) string) *store.App {
+// DBCredentials optionally sets a new database's user and password. Empty
+// fields are generated.
+type DBCredentials struct {
+	User     string
+	Password string
+}
+
+var dbUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,31}$`)
+
+// Validate checks user-chosen credentials for engine e.
+func (c DBCredentials) Validate(e *Engine) error {
+	if c.User != "" {
+		if !dbUserRe.MatchString(c.User) {
+			return errors.New("username: use up to 32 lowercase letters, numbers and underscores, starting with a letter or underscore")
+		}
+		if c.User == "root" && e.rootVar != "" {
+			return errors.New(`username: "root" is reserved; ` + e.Label + " already has a root user")
+		}
+		if strings.HasPrefix(c.User, "sp_") {
+			return errors.New(`username: names starting with "sp_" are reserved for SimplePanel`)
+		}
+	}
+	if c.Password != "" {
+		if len(c.Password) < 8 || len(c.Password) > 128 {
+			return errors.New("password: use 8 to 128 characters")
+		}
+		for _, r := range c.Password {
+			if r <= ' ' || r > '~' || strings.ContainsRune("'\"\\`$", r) {
+				return errors.New("password: use letters, numbers and symbols, without spaces, quotes, backslashes, backticks or $")
+			}
+		}
+	}
+	return nil
+}
+
+// NewDatabaseApp returns a ready-to-save app for engine with credentials
+// (generated where cred leaves them empty) and a persistent data volume.
+// cred must already be validated.
+func NewDatabaseApp(e *Engine, projectID int64, projectName, name string, cred DBCredentials, randomHex func(int) string) *store.App {
 	ident := strings.ReplaceAll(name, "-", "_")
+	user, pass := cred.User, cred.Password
+	if user == "" {
+		user = ident
+	}
+	if pass == "" {
+		pass = randomHex(16)
+	}
 	env := []string{
-		e.userVar + "=" + ident,
-		e.passVar + "=" + randomHex(16),
+		e.userVar + "=" + user,
+		e.passVar + "=" + pass,
 		e.dbVar + "=" + ident,
 	}
 	if e.rootVar != "" {
