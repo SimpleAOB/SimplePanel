@@ -37,7 +37,7 @@ type exportProject struct {
 
 type exportService struct {
 	Name       string         `json:"name"`
-	Type       string         `json:"type"` // "app" | "postgres" | "mysql" | "mariadb"
+	Type       string         `json:"type"` // "app" | "postgres" | "mysql" | "mariadb" | "mongo" | "redis"
 	Source     string         `json:"source,omitempty"`
 	Image      string         `json:"image,omitempty"`
 	Git        *exportGit     `json:"git,omitempty"`
@@ -251,14 +251,17 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 
 	var a *store.App
 	switch es.Type {
-	case "postgres", "mysql", "mariadb":
+	case "postgres", "mysql", "mariadb", "mongo", "redis":
 		e := deploy.EngineByKey(es.Type)
-		if es.Git != nil || es.Source == "git" || len(es.Domains) > 0 || len(es.Volumes) > 0 || es.Command != "" {
-			return fail(errors.New("databases only support image, env, cpuLimit, memoryMb and ports"))
+		if es.Git != nil || es.Source == "git" || len(es.Domains) > 0 || len(es.Volumes) > 0 {
+			return fail(errors.New("databases only support image, env, command, cpuLimit, memoryMb and ports"))
 		}
 		a = deploy.NewDatabaseApp(e, projectID, projectName, name, deploy.DBCredentials{}, store.RandomToken)
 		in := appInput{Source: "image", Image: a.Image, Env: a.Env, CPULimit: es.CPULimit, MemoryMB: es.MemoryMB,
-			Volumes: a.Volumes, Ports: es.Ports}
+			Volumes: a.Volumes, Ports: es.Ports, Command: a.Command}
+		if es.Command != "" {
+			in.Command = es.Command
+		}
 		if es.Image != "" {
 			in.Image = es.Image
 		}

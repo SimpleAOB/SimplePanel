@@ -100,7 +100,7 @@ var migrations = []string{
 		finished_at INTEGER
 	);
 	CREATE INDEX deployments_app ON deployments(app_id, id DESC);`,
-	// v2: databases are apps with a non-"app" kind (postgres, mysql, mariadb).
+	// v2: databases are apps with a non-"app" kind (postgres, mysql, mariadb, mongo, redis).
 	`ALTER TABLE apps ADD COLUMN kind TEXT NOT NULL DEFAULT 'app';`,
 	// v3: static site builds for Git apps.
 	`ALTER TABLE apps ADD COLUMN build_type TEXT NOT NULL DEFAULT 'auto';
@@ -423,7 +423,7 @@ type App struct {
 	ProjectID    int64    `json:"projectId"`
 	ProjectName  string   `json:"projectName"`
 	Name         string   `json:"name"`
-	Kind         string   `json:"kind"`   // "app" | "postgres" | "mysql" | "mariadb"
+	Kind         string   `json:"kind"`   // "app" | "postgres" | "mysql" | "mariadb" | "mongo" | "redis"
 	Source       string   `json:"source"` // "image" | "git"
 	Image        string   `json:"image"`
 	GitURL       string   `json:"gitUrl"`

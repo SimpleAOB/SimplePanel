@@ -20,6 +20,16 @@
   let showPw = $state(false);
   let dbImage = $state('');
   let engines = $state([]);
+  let selected = $derived(engines.find((e) => e.key === engine));
+  // Redis has only a password; older servers don't send customUser.
+  let customUser = $derived(selected?.customUser ?? true);
+  const versionExample = {
+    postgres: 'postgres:16-alpine',
+    mysql: 'mysql:8.0',
+    mariadb: 'mariadb:10.11',
+    mongo: 'mongo:7.0',
+    redis: 'redis:7.4-alpine',
+  };
 
   $effect(() => {
     kind = ui.route.tab === 'database' ? 'database' : 'app';
@@ -39,7 +49,7 @@
       name: form.name.trim().toLowerCase(),
       engine,
       image: ui.advanced ? dbImage.trim() : '',
-      user: dbUser.trim(),
+      user: customUser ? dbUser.trim() : '',
       password: dbPassword,
     });
     await loadApps(pid);
@@ -106,15 +116,17 @@
     {#if ui.advanced}
       <label class="field">
         <span>Image override</span>
-        <input type="text" bind:value={dbImage} placeholder={engines.find((e) => e.key === engine)?.image} />
-        <small>Use a different version, for example postgres:16-alpine.</small>
+        <input type="text" bind:value={dbImage} placeholder={selected?.image} />
+        <small>Use a different version, for example {versionExample[engine] || 'postgres:16-alpine'}.</small>
       </label>
     {/if}
     <div class="row">
+      {#if customUser}
       <label class="field">
         <span>Username <span class="opt">(optional)</span></span>
         <input type="text" bind:value={dbUser} placeholder={(form.name || 'my-db').trim().toLowerCase().replace(/-/g, '_')} autocomplete="off" spellcheck="false" maxlength="32" />
       </label>
+      {/if}
       <label class="field">
         <span>Password <span class="opt">(optional)</span></span>
         <div class="pw">
@@ -123,7 +135,18 @@
         </div>
       </label>
     </div>
-    <small class="hint">Leave these empty and SimplePanel generates a username (from the name) and a strong random password. You can copy both from the database's page afterwards.</small>
+    <small class="hint">
+      {#if customUser}
+        Leave these empty and SimplePanel generates a username (from the name) and a strong random password. You can copy both from the database's page afterwards.
+      {:else}
+        Leave it empty and SimplePanel generates a strong random password. You can copy it from the database's page afterwards.
+      {/if}
+    </small>
+    {#if engine === 'mongo'}
+      <small class="hint">This user is MongoDB's administrator. Apps connect with <code>authSource=admin</code>, which is already in the connection URL.</small>
+    {:else if engine === 'redis'}
+      <small class="hint">Every write is saved to disk (append-only file), so data survives restarts.</small>
+    {/if}
     <p class="muted">
       Data is stored in a persistent volume. The database is only reachable from apps in this project.
     </p>

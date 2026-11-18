@@ -503,6 +503,9 @@ func (c *mcpCall) aiDatabase(ref string) (*store.App, string, error) {
 	if !app.IsDatabase() {
 		return nil, "", fmt.Errorf("%s is an app, not a database", c.target)
 	}
+	if e := deploy.EngineByKey(app.Kind); e == nil || !e.AIAccess {
+		return nil, "", fmt.Errorf("%s is a %s database; AI read-only queries only work with PostgreSQL, MySQL and MariaDB", c.target, app.Kind)
+	}
 	on, pw, err := c.s.store.AIAccess(c.ctx, app.ID)
 	if err != nil {
 		return nil, "", err
@@ -560,11 +563,10 @@ func (c *mcpCall) dbConnection(a *store.App) map[string]any {
 		return nil
 	}
 	on, _, _ := c.s.store.AIAccess(c.ctx, a.ID)
-	scheme, _, _ := strings.Cut(info.URL, "://")
 	return map[string]any{
 		"engine": info.Engine, "host": a.Name, "fullHost": info.Host, "port": info.Port,
 		"user": info.User, "database": info.Database,
-		"urlTemplate":   fmt.Sprintf("%s://%s:<password>@%s:%d/%s", scheme, info.User, a.Name, info.Port, info.Database),
+		"urlTemplate":   info.URLTemplate(a.Name),
 		"password":      "Not available to AI. Ask the user: it is on the database's page in SimplePanel.",
 		"aiReadAccess":  on,
 		"reachableFrom": "Only apps in project " + a.ProjectName + ".",
@@ -1175,13 +1177,13 @@ func init() {
 		},
 		{
 			name: "create_database", title: "Create a database", scope: store.ScopeManage, audit: true,
-			description: "Creates and starts a PostgreSQL, MySQL or MariaDB database with generated credentials and a persistent volume. Only apps in the same project can reach it.",
+			description: "Creates and starts a PostgreSQL, MySQL, MariaDB, MongoDB or Redis database with generated credentials and a persistent volume. Only apps in the same project can reach it.",
 			props: map[string]any{
 				"project":  pProject,
 				"name":     prop("string", "Database service name, e.g. db. Apps connect to it by this name."),
-				"engine":   enumProp("Database engine.", "postgres", "mysql", "mariadb"),
+				"engine":   enumProp("Database engine.", "postgres", "mysql", "mariadb", "mongo", "redis"),
 				"image":    prop("string", "Override the default image, e.g. postgres:16-alpine."),
-				"user":     prop("string", "Username. Leave out to use the database name."),
+				"user":     prop("string", "Username. Leave out to use the database name. Redis has no username: leave it out."),
 				"password": prop("string", "Password the user chose. Leave out to generate one; you won't be able to read it, so don't invent one."),
 			},
 			required: []string{"project", "name", "engine"},

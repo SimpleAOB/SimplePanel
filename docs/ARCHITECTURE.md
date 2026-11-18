@@ -145,10 +145,19 @@ with the images already on the server.
 Automatic builds for server apps without a Dockerfile (Nixpacks or
 buildpacks) are planned.
 
-### Databases (PostgreSQL, MySQL, MariaDB)
+### Databases (PostgreSQL, MySQL, MariaDB, MongoDB, Redis)
 1. User picks an engine and a name. SimplePanel generates a user, a random
    password (and a root password for MySQL/MariaDB) as environment variables
    and adds a named volume for the data directory.
+   - MongoDB's user is the administrator the official image creates
+     (`MONGO_INITDB_ROOT_*`, authenticated against `admin`), so the URL ends
+     in `?authSource=admin`.
+   - Redis has no user and its image reads no password variable, so the
+     database gets a default command that starts
+     `redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"`. The
+     command is visible (and editable) in Advanced view; the password
+     itself only lives in the environment.
+   - AI read-only access is only offered for the SQL engines.
 2. The database is deployed like an image app (official images pinned to a
    major version, e.g. `postgres:17-alpine`), attached only to the project
    network.
@@ -239,6 +248,13 @@ addressing, multipart uploads above 64 MB) with no SDK dependency.
   container (`docker exec`): `pg_dump --clean --if-exists --no-owner`, or
   `mysqldump`/`mariadb-dump --single-transaction`. Restores pipe the dump
   back in the same way.
+- **MongoDB** is dumped with `mongodump --archive` (all databases).
+  `mongorestore --archive --drop` replaces the collections in the backup and
+  skips `admin`, `config` and `local`, so a restore never changes users.
+- **Redis** is saved with `redis-cli --rdb` (a point-in-time snapshot).
+  Restoring stops the database, replaces its data volume with the snapshot
+  (as `dump.rdb` and as the base of a fresh append-only file, since Redis
+  ignores `dump.rdb` when AOF is on) and starts it again.
 - **App volumes** are archived by a short-lived helper container
   (`alpine`, no network) that mounts the volumes read-only. Restoring
   scales the app to 0, replaces the volume contents and scales it back.
@@ -246,7 +262,8 @@ addressing, multipart uploads above 64 MB) with no SDK dependency.
 
 The stream is gzipped, optionally encrypted with age (scrypt passphrase per
 destination) and uploaded as
-`<folder>/<project>/<service>/YYYYMMDD-HHMMSS-<kind>.sql.gz[.age]`.
+`<folder>/<project>/<service>/YYYYMMDD-HHMMSS-<kind>.<ext>.gz[.age]`, where
+`<ext>` is `sql`, `archive` (MongoDB), `rdb` (Redis), `tar` or `db`.
 Schedules are five-field cron expressions checked every 30 seconds;
 scheduled backups beyond the job's “keep” count are deleted. At most two
 backups run at once, one per service.

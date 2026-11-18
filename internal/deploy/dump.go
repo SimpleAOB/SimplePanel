@@ -6,6 +6,7 @@ package deploy
 // nothing is buffered in memory.
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -70,6 +71,22 @@ func (m *Manager) DumpDatabase(ctx context.Context, app *store.App, w io.Writer)
 	switch e.Key {
 	case "postgres":
 		cmd = []string{"pg_dump", "-U", vars[e.userVar], "-d", vars[e.dbVar], "--clean", "--if-exists", "--no-owner", "--no-privileges"}
+	case "mongo":
+		// Every database is dumped; admin (users) and config are skipped on
+		// restore, so a restore never changes who can log in.
+		cmd, env = mongoTool(e, vars, "mongodump --archive --quiet")
+	case "redis":
+		// redis-cli writes trailing sync markers when the target is stdout,
+		// so the snapshot goes through a file in the container.
+		cmd = []string{"sh", "-c", `f=$(mktemp) || exit 1
+redis-cli --no-auth-warning --rdb "$f" >/dev/null
+rc=$?
+[ "$rc" -eq 0 ] && cat "$f"
+rc2=$?
+rm -f "$f"
+[ "$rc" -eq 0 ] && exit "$rc2"
+exit "$rc"`}
+		env = []string{"REDISCLI_AUTH=" + vars[e.passVar]}
 	default:
 		cmd = []string{dumpClient(e), "-uroot", "--single-transaction", "--quick", "--routines", "--triggers", "--events",
 			"--no-tablespaces", "--hex-blob", "--default-character-set=utf8mb4"}
@@ -90,8 +107,17 @@ func (m *Manager) DumpDatabase(ctx context.Context, app *store.App, w io.Writer)
 	return nil
 }
 
+// mongoTool returns a shell command that runs a MongoDB tool (with its
+// arguments) as the administrator. The password is passed through the
+// environment rather than the exec command line.
+func mongoTool(e *Engine, vars map[string]string, tool string) (cmd, env []string) {
+	return []string{"sh", "-c", `exec ` + tool + ` --username "$SP_USER" --password "$SP_PASSWORD" --authenticationDatabase admin`},
+		[]string{"SP_USER=" + vars[e.userVar], "SP_PASSWORD=" + vars[e.passVar]}
+}
+
 // RestoreDatabase runs the SQL from r against the database in a single
-// transaction (PostgreSQL) or as one session (MySQL/MariaDB).
+// transaction (PostgreSQL) or as one session (MySQL/MariaDB), or loads a
+// mongodump archive (MongoDB). Redis uses RestoreRedis.
 func (m *Manager) RestoreDatabase(ctx context.Context, app *store.App, r io.Reader, log io.Writer) error {
 	e, vars, err := m.dbVars(app)
 	if err != nil {
@@ -106,6 +132,13 @@ func (m *Manager) RestoreDatabase(ctx context.Context, app *store.App, r io.Read
 	case "postgres":
 		cmd = []string{"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-U", vars[e.userVar], "-d", vars[e.dbVar]}
 		env = []string{"PGOPTIONS=-c client_min_messages=warning"}
+	case "mongo":
+		// Collections in the backup are dropped and replaced. Users and
+		// roles (admin) and cluster metadata (config, local) are left alone,
+		// so the target keeps its own credentials.
+		cmd, env = mongoTool(e, vars, "mongorestore --archive --drop --quiet --nsExclude='admin.*' --nsExclude='config.*' --nsExclude='local.*'")
+	case "redis":
+		return errors.New("Redis backups are restored with RestoreRedis")
 	default:
 		cmd = []string{mysqlClient(e), "-uroot", "--default-character-set=utf8mb4", vars[e.dbVar]}
 		env = []string{"MYSQL_PWD=" + vars[e.rootVar]}
@@ -131,11 +164,22 @@ func (m *Manager) WaitDatabaseReady(ctx context.Context, app *store.App, timeout
 	deadline := time.Now().Add(timeout)
 	var last error
 	for time.Now().Before(deadline) {
-		var probe string
-		if e.Key == "postgres" {
-			probe = "SELECT 1"
-			_, last = m.exec(ctx, app, []string{"psql", "-X", "-q", "-tA", "-U", vars[e.userVar], "-d", vars[e.dbVar], "-c", probe}, nil)
-		} else {
+		switch e.Key {
+		case "postgres":
+			_, last = m.exec(ctx, app, []string{"psql", "-X", "-q", "-tA", "-U", vars[e.userVar], "-d", vars[e.dbVar], "-c", "SELECT 1"}, nil)
+		case "mongo":
+			// The image first runs a temporary server to create the user; wait
+			// until it has been replaced by the real one.
+			cmd, env := mongoTool(e, vars, `mongosh --quiet --norc --eval 'db.runCommand({ping: 1}).ok'`)
+			cmd[2] = `test ! -e "${TMPDIR:-/tmp}/docker-entrypoint-temp-mongod.pid" || { echo "still initializing" >&2; exit 1; }; ` + cmd[2]
+			_, last = m.exec(ctx, app, cmd, env)
+		case "redis":
+			var out string
+			out, last = m.exec(ctx, app, []string{"redis-cli", "--no-auth-warning", "ping"}, []string{"REDISCLI_AUTH=" + vars[e.passVar]})
+			if last == nil && strings.TrimSpace(out) != "PONG" {
+				last = errors.New(strings.TrimSpace(out))
+			}
+		default:
 			_, last = m.exec(ctx, app, []string{mysqlClient(e), "-uroot", "-e", "SELECT 1", vars[e.dbVar]}, []string{"MYSQL_PWD=" + vars[e.rootVar]})
 		}
 		if last == nil {
@@ -199,6 +243,43 @@ func (m *Manager) RestoreVolumes(ctx context.Context, app *store.App, r io.Reade
 	if len(app.Volumes) == 0 {
 		return errors.New("this app has no volumes")
 	}
+	// Only the volumes the app still has are mounted; folders in the archive
+	// for volumes it no longer has land in the throwaway container.
+	return m.replaceVolumes(ctx, app, `set -e
+for d in /volumes/*/; do find "$d" -mindepth 1 -delete; done
+tar -x -f - -C /volumes`, r, log)
+}
+
+// redisRestoreScript replaces a Redis data folder with the RDB snapshot on
+// stdin. The snapshot is stored both as dump.rdb and as the base of a new
+// append-only file, because Redis ignores dump.rdb when append-only
+// persistence is on.
+const redisRestoreScript = `set -e
+cd /volumes/data
+find . -mindepth 1 -delete
+cat > dump.rdb
+mkdir appendonlydir
+cp dump.rdb appendonlydir/appendonly.aof.1.base.rdb
+: > appendonlydir/appendonly.aof.1.incr.aof
+printf 'file appendonly.aof.1.base.rdb seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n' > appendonlydir/appendonly.aof.manifest`
+
+// RestoreRedis stops a Redis database, replaces its data with the RDB
+// snapshot from r, and starts it again.
+func (m *Manager) RestoreRedis(ctx context.Context, app *store.App, r io.Reader, log func(string, ...any)) error {
+	if app.Kind != "redis" || len(app.Volumes) == 0 || app.Volumes[0].Name != "data" {
+		return errors.New("not a Redis database with a data volume")
+	}
+	br := bufio.NewReader(r)
+	if magic, err := br.Peek(5); err != nil || string(magic) != "REDIS" {
+		return errors.New("the backup isn't a Redis snapshot (RDB file)")
+	}
+	return m.replaceVolumes(ctx, app, redisRestoreScript, br, log)
+}
+
+// replaceVolumes stops the app if it runs, runs script in a helper
+// container with the app's volumes under /volumes and r as its input, and
+// starts the app again.
+func (m *Manager) replaceVolumes(ctx context.Context, app *store.App, script string, r io.Reader, log func(string, ...any)) error {
 	img, err := m.helperImage(ctx)
 	if err != nil {
 		return err
@@ -206,7 +287,7 @@ func (m *Manager) RestoreVolumes(ctx context.Context, app *store.App, r io.Reade
 	running := false
 	if svc, err := m.docker.ServiceInspect(ctx, app.ServiceName()); err == nil && svc.Spec.Mode.Replicated != nil && svc.Spec.Mode.Replicated.Replicas > 0 {
 		running = true
-		log("Stopping %s while its volumes are replaced", app.Name)
+		log("Stopping %s while its data is replaced", app.Name)
 		if err := m.Scale(ctx, app, 0); err != nil {
 			return err
 		}
@@ -223,11 +304,6 @@ func (m *Manager) RestoreVolumes(ctx context.Context, app *store.App, r io.Reade
 		}
 	}
 	defer restart()
-	// Only the volumes the app still has are mounted; folders in the archive
-	// for volumes it no longer has land in the throwaway container.
-	script := `set -e
-for d in /volumes/*/; do find "$d" -mindepth 1 -delete; done
-tar -x -f - -C /volumes`
 	var stderr tailWriter
 	code, err := m.docker.RunContainer(ctx, docker.RunOptions{
 		Image: img, Cmd: []string{"sh", "-c", script}, Mounts: m.volumeMounts(app, false),

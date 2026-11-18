@@ -191,7 +191,7 @@ type Backup struct {
 	Destination   string `json:"destination"`
 	Project       string `json:"project"`
 	Service       string `json:"service"`
-	Kind          string `json:"kind"` // postgres|mysql|mariadb|volumes|panel
+	Kind          string `json:"kind"` // postgres|mysql|mariadb|mongo|redis|volumes|panel
 	Key           string `json:"key"`
 	Size          int64  `json:"size"`
 	Encrypted     bool   `json:"encrypted"`

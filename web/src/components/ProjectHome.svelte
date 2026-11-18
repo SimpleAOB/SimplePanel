@@ -53,7 +53,7 @@
       <div class="card empty">
         {#if level >= 2}
           <h2>Add your first app</h2>
-          <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres or MySQL database.</p>
+          <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres, MySQL, MongoDB or Redis database.</p>
           <div><button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button></div>
         {:else}
           <h2>Nothing here yet</h2>

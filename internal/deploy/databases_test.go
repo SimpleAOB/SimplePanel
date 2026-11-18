@@ -17,10 +17,14 @@ func TestDatabaseApp(t *testing.T) {
 			t.Fatalf("%s: env invalid: %v", e.Key, err)
 		}
 		info := DatabaseInfo(a)
-		if info.Host != "shop_orders-db" || info.User != "orders_db" || info.Database != "orders_db" || info.Password == "" {
+		wantUser, wantDB := "orders_db", "orders_db"
+		if e.Key == "redis" {
+			wantUser, wantDB = "default", "0"
+		}
+		if info.Host != "shop_orders-db" || info.User != wantUser || info.Database != wantDB || info.Password == "" {
 			t.Fatalf("%s: info %+v", e.Key, info)
 		}
-		if e.Key != "postgres" && info.RootPassword == "" {
+		if (e.Key == "mysql" || e.Key == "mariadb") && info.RootPassword == "" {
 			t.Errorf("%s: missing root password", e.Key)
 		}
 		if !strings.Contains(info.URL, "p%40ss%2Fword@shop_orders-db:") {
@@ -52,5 +56,52 @@ func TestDatabaseCredentials(t *testing.T) {
 	}
 	if err := (DBCredentials{User: "root"}).Validate(pg); err != nil {
 		t.Errorf("postgres root user rejected: %v", err)
+	}
+}
+
+func TestMongoAndRedis(t *testing.T) {
+	rnd := func(int) string { return "s3cret" }
+	mongo, redis := EngineByKey("mongo"), EngineByKey("redis")
+
+	m := NewDatabaseApp(mongo, 1, "shop", "docs", DBCredentials{User: "root"}, rnd)
+	info := DatabaseInfo(m)
+	if info.URL != "mongodb://root:s3cret@shop_docs:27017/docs?authSource=admin" {
+		t.Errorf("mongo URL: %s", info.URL)
+	}
+	if got := info.URLTemplate("docs"); got != "mongodb://root:<password>@docs:27017/docs?authSource=admin" {
+		t.Errorf("mongo URL template: %s", got)
+	}
+	if (DBCredentials{User: "root"}).Validate(mongo) != nil {
+		t.Error("mongo should accept root as the admin username")
+	}
+
+	r := NewDatabaseApp(redis, 1, "shop", "cache", DBCredentials{}, rnd)
+	if r.Env != "REDIS_PASSWORD=s3cret\n" {
+		t.Errorf("redis env: %q", r.Env)
+	}
+	if strings.Contains(r.Command, "s3cret") || !strings.Contains(r.Command, "$REDIS_PASSWORD") {
+		t.Errorf("redis command must read the password from the environment: %s", r.Command)
+	}
+	args, err := SplitCommand(r.Command)
+	if err != nil || len(args) != 3 || args[0] != "sh" || !strings.Contains(args[2], `--requirepass "$REDIS_PASSWORD"`) {
+		t.Errorf("redis command splits to %q (%v)", args, err)
+	}
+	if info := DatabaseInfo(r); info.URL != "redis://default:s3cret@shop_cache:6379/0" {
+		t.Errorf("redis URL: %s", info.URL)
+	}
+	if (DBCredentials{User: "app"}).Validate(redis) == nil {
+		t.Error("redis has no username to choose")
+	}
+	if (DBCredentials{Password: "longenough"}).Validate(redis) != nil {
+		t.Error("redis password rejected")
+	}
+	if !redis.IsCredentialVar("REDIS_PASSWORD") || redis.IsCredentialVar("") || redis.IsCredentialVar("OTHER") {
+		t.Error("redis credential vars")
+	}
+	if got := redis.StripCredentials("REDIS_PASSWORD=x\nTZ=UTC\n"); got != "TZ=UTC\n" {
+		t.Errorf("strip: %q", got)
+	}
+	if mongo.AIAccess || redis.AIAccess || !EngineByKey("postgres").AIAccess {
+		t.Error("AI access is for SQL engines only")
 	}
 }

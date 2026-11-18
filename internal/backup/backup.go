@@ -84,6 +84,10 @@ func extension(kind string) string {
 		return ".tar.gz"
 	case "panel":
 		return ".db.gz"
+	case "mongo":
+		return ".archive.gz" // mongodump --archive; restore with mongorestore --archive --gzip
+	case "redis":
+		return ".rdb.gz" // a Redis snapshot (dump.rdb)
 	}
 	return ".sql.gz"
 }
@@ -93,7 +97,7 @@ func extension(kind string) string {
 func KindFromKey(key string) string {
 	base := path.Base(key)
 	base = strings.TrimSuffix(base, ".age")
-	for _, k := range []string{"postgres", "mysql", "mariadb", "volumes", "panel"} {
+	for _, k := range []string{"postgres", "mysql", "mariadb", "mongo", "redis", "volumes", "panel"} {
 		if strings.HasSuffix(base, "-"+k+extension(k)) {
 			return k
 		}
@@ -104,8 +108,8 @@ func KindFromKey(key string) string {
 // Compatible reports whether a backup of kind can be restored into app.
 func Compatible(kind string, app *store.App) bool {
 	switch kind {
-	case "postgres":
-		return app.Kind == "postgres"
+	case "postgres", "mongo", "redis":
+		return app.Kind == kind
 	case "mysql", "mariadb":
 		return app.Kind == "mysql" || app.Kind == "mariadb"
 	case "volumes":
@@ -574,6 +578,7 @@ func (s *Service) restore(ctx context.Context, r *store.Restore, req RestoreRequ
 		lb.Printf("Creating database %s/%s (%s)", req.App.ProjectName, req.NewName, e.Label)
 		target = deploy.NewDatabaseApp(e, req.App.ProjectID, req.App.ProjectName, req.NewName, deploy.DBCredentials{}, store.RandomToken)
 		target.Image = req.App.Image
+		target.Command = req.App.Command // e.g. Redis's persistence options
 		if err := s.store.CreateApp(ctx, target); err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				return nil, errors.New("a service with that name already exists in this project")
@@ -611,7 +616,18 @@ func (s *Service) restore(ctx context.Context, r *store.Restore, req RestoreRequ
 		return target, fmt.Errorf("the backup isn't valid gzip data: %w", err)
 	}
 	defer gz.Close()
-	if target.IsDatabase() {
+	switch {
+	case target.Kind == "redis":
+		lb.Printf("Restoring into %s/%s; its current data is replaced", target.ProjectName, target.Name)
+		if err := s.deploy.RestoreRedis(ctx, target, gz, lb.Printf); err != nil {
+			return target, err
+		}
+		lb.Printf("Waiting for %s to load the data", target.Name)
+		return target, s.deploy.WaitDatabaseReady(ctx, target, 3*time.Minute)
+	case target.Kind == "mongo":
+		lb.Printf("Restoring into %s/%s; existing collections in the backup are replaced", target.ProjectName, target.Name)
+		return target, s.deploy.RestoreDatabase(ctx, target, gz, lb)
+	case target.IsDatabase():
 		lb.Printf("Restoring into %s/%s; existing tables in the backup are replaced", target.ProjectName, target.Name)
 		return target, s.deploy.RestoreDatabase(ctx, target, gz, lb)
 	}
