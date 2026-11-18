@@ -327,6 +327,33 @@ var migrations = []string{
 		ended_at INTEGER
 	);
 	CREATE UNIQUE INDEX app_runs_number ON app_runs(app_id, number);`,
+
+	// v8: database Query tab: per-user permission, the read-only user's
+	// password, saved queries and history.
+	`ALTER TABLE users ADD COLUMN db_query INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE apps ADD COLUMN query_password TEXT NOT NULL DEFAULT '';
+	CREATE TABLE saved_queries (
+		id INTEGER PRIMARY KEY,
+		app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		username TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL,
+		query TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX saved_queries_app ON saved_queries(app_id);
+	CREATE TABLE query_history (
+		id INTEGER PRIMARY KEY,
+		app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		query TEXT NOT NULL,
+		ok INTEGER NOT NULL,
+		rows INTEGER NOT NULL DEFAULT 0,
+		ms INTEGER NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX query_history_app_user ON query_history(app_id, user_id, id DESC);`,
 }
 
 func (s *Store) migrate() error {

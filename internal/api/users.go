@@ -51,6 +51,9 @@ type userInput struct {
 	Role        string            `json:"role"`
 	AllProjects bool              `json:"allProjects"`
 	Access      map[string]string `json:"access"`
+	// DBQuery gives a Developer or Viewer the database Query tab
+	// (read-only). Owners and admins always have it.
+	DBQuery bool `json:"dbQuery"`
 }
 
 // validate checks the role and per-project access and returns the access
@@ -120,6 +123,11 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, u *store.Use
 		s.storeErr(w, err)
 		return
 	}
+	if err := s.store.SetUserDBQuery(r.Context(), nu.ID, in.DBQuery && in.Role != store.RoleAdmin); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	nu.DBQuery = in.DBQuery && in.Role != store.RoleAdmin
 	tok, err := s.store.CreateInvite(r.Context(), nu.ID, store.InviteKind, inviteTTL)
 	if err != nil {
 		s.storeErr(w, err)
@@ -171,6 +179,10 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request, u *store.Use
 		return
 	}
 	if err := s.store.UpdateUserRole(r.Context(), t.ID, in.Role, in.AllProjects || in.Role == store.RoleAdmin, access); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	if err := s.store.SetUserDBQuery(r.Context(), t.ID, in.DBQuery && in.Role != store.RoleAdmin); err != nil {
 		s.storeErr(w, err)
 		return
 	}
