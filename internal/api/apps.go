@@ -595,6 +595,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 		}
 		out["database"] = info
 		out["aiAccess"], _, _ = s.store.AIAccess(r.Context(), a.ID)
+		out["canQuery"] = deploy.QuerySupported(a.Kind) && u.CanQueryDatabases()
 		if e := deploy.EngineByKey(a.Kind); e != nil {
 			out["aiAccessSupported"] = e.AIAccess
 		}

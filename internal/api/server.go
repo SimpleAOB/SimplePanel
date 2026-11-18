@@ -199,6 +199,17 @@ func (s *Server) Handler() http.Handler {
 	a("GET /api/cron-runs/{id}", s.getCronRun)
 	a("GET /api/deployments/{id}", s.getDeployment)
 
+	// Database Query tab (read-only).
+	a("GET /api/apps/{id}/query", s.queryInfo)
+	a("POST /api/apps/{id}/query", s.runQuery)
+	a("GET /api/apps/{id}/query/tables", s.queryTables)
+	a("GET /api/apps/{id}/query/columns", s.queryColumns)
+	a("GET /api/apps/{id}/query/history", s.queryHistory)
+	a("DELETE /api/apps/{id}/query/history", s.clearQueryHistory)
+	a("GET /api/apps/{id}/query/saved", s.listSavedQueries)
+	a("POST /api/apps/{id}/query/saved", s.saveQuery)
+	a("DELETE /api/saved-queries/{id}", s.deleteSavedQuery)
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeErr(w, 404, "not found") })
 	mux.HandleFunc("/", s.static)
 

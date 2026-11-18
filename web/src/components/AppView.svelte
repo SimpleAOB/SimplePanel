@@ -12,6 +12,7 @@
   import BackupsView from './BackupsView.svelte';
   import GitCard from './GitCard.svelte';
   import CronJobs from './CronJobs.svelte';
+  import QueryView from './QueryView.svelte';
 
   let exporting = $state(false);
 
@@ -43,6 +44,7 @@
   let tabs = $derived([
     ['overview', 'Overview'],
     ['metrics', 'Metrics'],
+    ...(detail?.canQuery ? [['query', 'Query']] : []),
     ...(detail?.backupKind && !isPreview ? [['backups', 'Backups']] : []),
     ...(canDeploy && !isPreview ? [['environment', 'Environment']] : []),
     ['deployments', 'Deployments'],
@@ -228,7 +230,7 @@
     {/each}
   </nav>
 
-  <div class="page">
+  <div class="page" class:wide={tab === 'query'}>
     {#if error}<p class="error">{error}</p>{/if}
     {#if detail.status.message && detail.status.state === 'failing'}
       <p class="error">
@@ -395,6 +397,10 @@
         </section>
       {/if}
       {/if}
+    {:else if tab === 'query' && detail.canQuery}
+      {#key aid}
+        <QueryView {aid} appName={detail.app.name} engine={detail.database?.engine || detail.app.kind} {canDeploy} />
+      {/key}
     {:else if tab === 'cron' && !isPreview}
       {#key aid}
         <CronJobs {aid} {canDeploy} appName={detail.app.name} {isDb} />
@@ -515,6 +521,9 @@
     gap: var(--sp-space-4);
     max-width: 860px;
     width: 100%;
+  }
+  .page.wide {
+    max-width: 1400px;
   }
   .card {
     display: flex;

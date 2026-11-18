@@ -367,6 +367,37 @@ every release. It stores the URL and token in the user's config directory
 (mode 0600); `SP_URL` and `SP_TOKEN` override it for CI. See
 [API.md](API.md).
 
+## Database Query tab
+
+A built-in, read-only query tool on every database (no phpMyAdmin or
+similar to deploy). Code: `internal/deploy/dbquery.go`, `mongoparse.go`,
+`internal/api/query.go`, `web/src/components/QueryView.svelte`.
+
+- **The database enforces read-only.** The first time someone uses the tab,
+  SimplePanel creates a dedicated user `sp_query_ro` inside that database
+  (password kept on the server, never shown): SELECT/SHOW VIEW only on
+  PostgreSQL, MySQL and MariaDB (plus read-only sessions and a statement
+  timeout per query), the `readAnyDatabase` role on MongoDB (no access to
+  users or password hashes), and an ACL user with `+@read -@dangerous` on
+  Redis. If the user goes missing (Redis restarts, a restore) the panel
+  recreates it and retries once.
+- **No exposed ports, no drivers.** Queries run through the database's own
+  client inside its container (`psql`, `mysql`/`mariadb`, `mongosh`,
+  `redis-cli`), like AI read-only access.
+- **MongoDB queries are parsed, not evaluated.** `db.orders.find({...}).sort(...)`
+  is parsed by the panel into collection, method and Extended JSON
+  arguments and handed to a fixed mongosh script as data, so no JavaScript
+  the user types ever runs (mongosh could otherwise read files in the
+  container). Only find, findOne, aggregate (without `$out`/`$merge`),
+  countDocuments, estimatedDocumentCount and distinct are accepted.
+- **Who:** owners and admins always; developers and viewers need the
+  "Query databases" permission (`users.db_query`, off by default) and
+  access to the project.
+- **Limits:** 30 s and 1,000 rows by default, up to 120 s and 10,000 rows
+  (Advanced view). Every query and table browse is in the activity log with
+  its text. History is per user (last 100); saved queries are shared per
+  database.
+
 ## Security model
 
 - **First-run setup:** the first visitor creates the admin account. Until that

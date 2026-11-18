@@ -343,13 +343,6 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // tailText keeps at most the last maxLines lines and maxBytes bytes of s.
 func tailText(s string, maxLines, maxBytes int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

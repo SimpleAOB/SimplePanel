@@ -67,7 +67,10 @@ type User struct {
 	Role        string `json:"role"`
 	AllProjects bool   `json:"allProjects"`
 	Pending     bool   `json:"pending"` // invited, no password set yet
-	CreatedAt   int64  `json:"createdAt"`
+	// DBQuery lets a Developer or Viewer use the database Query tab
+	// (read-only). Owners and admins can always.
+	DBQuery   bool  `json:"dbQuery"`
+	CreatedAt int64 `json:"createdAt"`
 
 	// Scope caps what the request may do when it comes from an API token
 	// (empty for browser sessions).
@@ -76,16 +79,22 @@ type User struct {
 	Token *APIToken `json:"-"`
 }
 
+// CanQueryDatabases reports whether the user may use the database Query
+// tab at all (project access is checked separately).
+func (u *User) CanQueryDatabases() bool {
+	return u != nil && (u.Role == RoleOwner || u.Role == RoleAdmin || u.DBQuery)
+}
+
 // IsAdmin reports whether the user may change server settings and users.
 func (u *User) IsAdmin() bool {
 	return u != nil && (u.Role == RoleOwner || u.Role == RoleAdmin) && (u.Scope == "" || u.Scope == ScopeFull)
 }
 
-const userCols = `u.id,u.username,u.role,u.all_projects,u.password_hash='',u.created_at`
+const userCols = `u.id,u.username,u.role,u.all_projects,u.password_hash='',u.created_at,u.db_query`
 
 func scanUser(r scanner) (*User, error) {
 	var u User
-	if err := r.Scan(&u.ID, &u.Username, &u.Role, &u.AllProjects, &u.Pending, &u.CreatedAt); err != nil {
+	if err := r.Scan(&u.ID, &u.Username, &u.Role, &u.AllProjects, &u.Pending, &u.CreatedAt, &u.DBQuery); err != nil {
 		return nil, mapErr(err)
 	}
 	return &u, nil
@@ -163,6 +172,12 @@ func (s *Store) UserPasswordHash(ctx context.Context, id int64) (string, error) 
 
 func (s *Store) SetUserPassword(ctx context.Context, id int64, hash string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=? WHERE id=?`, hash, id)
+	return err
+}
+
+// SetUserDBQuery sets the database query permission.
+func (s *Store) SetUserDBQuery(ctx context.Context, id int64, on bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET db_query=? WHERE id=?`, on, id)
 	return err
 }
 

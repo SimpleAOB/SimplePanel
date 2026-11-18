@@ -129,3 +129,29 @@
   --sp-series-fill: 0.1;
   --sp-grid: rgba(0, 0, 0, 0.07);
 }
+
+/* Syntax highlighting (Query tab editor). */
+:root {
+  --sp-syn-keyword: #9d8cff;
+  --sp-syn-string: #7fd4a0;
+  --sp-syn-number: #f0a35e;
+  --sp-syn-comment: #6d707b;
+  --sp-syn-function: #5fb8ff;
+  --sp-syn-operator: #e58fb6;
+  --sp-syn-key: #8ac8e8;
+  --sp-syn-literal: #f07d7d;
+  --sp-syn-ident: #e3c178;
+  --sp-syn-selection: rgba(91, 108, 255, 0.35);
+}
+:root[data-theme='light'] {
+  --sp-syn-keyword: #5a3fd1;
+  --sp-syn-string: #19794a;
+  --sp-syn-number: #b4560c;
+  --sp-syn-comment: #8a8e99;
+  --sp-syn-function: #1f6fc4;
+  --sp-syn-operator: #b0336f;
+  --sp-syn-key: #1b6f8f;
+  --sp-syn-literal: #c43535;
+  --sp-syn-ident: #8a6200;
+  --sp-syn-selection: rgba(70, 84, 240, 0.22);
+}

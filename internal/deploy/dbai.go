@@ -21,6 +21,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -91,11 +92,15 @@ func (m *Manager) container(ctx context.Context, app *store.App) (string, error)
 }
 
 func (m *Manager) exec(ctx context.Context, app *store.App, cmd, env []string) (string, error) {
+	return m.execMax(ctx, app, cmd, env, aiMaxOutput)
+}
+
+func (m *Manager) execMax(ctx context.Context, app *store.App, cmd, env []string, max int64) (string, error) {
 	id, err := m.container(ctx, app)
 	if err != nil {
 		return "", err
 	}
-	out, stderr, code, err := m.docker.Exec(ctx, id, cmd, env, aiMaxOutput)
+	out, stderr, code, err := m.docker.Exec(ctx, id, cmd, env, max)
 	if err != nil {
 		return "", err
 	}
@@ -125,8 +130,12 @@ func cleanClientError(s string) string {
 		}
 		keep = append(keep, l)
 	}
-	return strings.TrimSpace(strings.Join(keep, "\n"))
+	// Our queries start with session settings, so "at line 2" means the
+	// user's first line: drop it rather than confuse.
+	return strings.TrimSpace(atLineRe.ReplaceAllString(strings.Join(keep, "\n"), ""))
 }
+
+var atLineRe = regexp.MustCompile(` at line \d+`)
 
 func mysqlClient(e *Engine) string {
 	if e.Key == "mariadb" {
@@ -159,15 +168,26 @@ var errNoAIAccess = errors.New("AI read-only access is only available for Postgr
 
 // EnableAIAccess creates (or resets) the read-only user with password.
 func (m *Manager) EnableAIAccess(ctx context.Context, app *store.App, password string) error {
-	if !safeIdent(password) {
-		return errors.New("bad password")
-	}
-	e, vars, err := m.dbVars(app)
+	e, _, err := m.dbVars(app)
 	if err != nil {
 		return err
 	}
 	if !e.AIAccess {
 		return errNoAIAccess
+	}
+	return m.provisionSQLUser(ctx, app, aiUser, password, aiQueryTimeout, 3)
+}
+
+// provisionSQLUser creates (or resets) a SELECT-only user on a PostgreSQL,
+// MySQL or MariaDB database. roleTimeout is the statement timeout stored on
+// the PostgreSQL role (sessions may lower it).
+func (m *Manager) provisionSQLUser(ctx context.Context, app *store.App, user, password string, roleTimeout time.Duration, maxConns int) error {
+	if !safeIdent(password) || !safeIdent(user) {
+		return errors.New("bad user or password")
+	}
+	e, vars, err := m.dbVars(app)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -178,12 +198,12 @@ func (m *Manager) EnableAIAccess(ctx context.Context, app *store.App, password s
 			return err
 		}
 		if n, _ := strconv.Atoi(strings.TrimSpace(v)); n < minPostgresMajor*10000 {
-			return fmt.Errorf("AI read-only access needs PostgreSQL %d or newer", minPostgresMajor)
+			return fmt.Errorf("read-only access needs PostgreSQL %d or newer", minPostgresMajor)
 		}
 		_, err = m.adminExec(ctx, app, fmt.Sprintf(`DO $$BEGIN
 IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%[1]s') THEN CREATE ROLE %[1]s LOGIN; END IF;
 END$$;
-ALTER ROLE %[1]s WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD '%[2]s';
+ALTER ROLE %[1]s WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT %[6]d PASSWORD '%[2]s';
 ALTER ROLE %[1]s SET default_transaction_read_only = on;
 ALTER ROLE %[1]s SET statement_timeout = '%[3]dms';
 REVOKE pg_read_all_data FROM %[1]s;
@@ -197,15 +217,16 @@ FOR s IN SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\_%%' AND ns
 END LOOP;
 END$$;
 ALTER DEFAULT PRIVILEGES FOR ROLE "%[5]s" GRANT SELECT ON TABLES TO %[1]s;
-ALTER DEFAULT PRIVILEGES FOR ROLE "%[5]s" GRANT SELECT ON SEQUENCES TO %[1]s;`, aiUser, password, aiQueryTimeout.Milliseconds(), vars[e.dbVar], vars[e.userVar]))
+ALTER DEFAULT PRIVILEGES FOR ROLE "%[5]s" GRANT SELECT ON SEQUENCES TO %[1]s;`, user, password, roleTimeout.Milliseconds(), vars[e.dbVar], vars[e.userVar], maxConns))
 		return err
-	default:
+	case "mysql", "mariadb":
 		_, err := m.adminExec(ctx, app, fmt.Sprintf(`CREATE USER IF NOT EXISTS '%[1]s'@'localhost' IDENTIFIED BY '%[2]s';
-ALTER USER '%[1]s'@'localhost' IDENTIFIED BY '%[2]s' WITH MAX_USER_CONNECTIONS 3;
+ALTER USER '%[1]s'@'localhost' IDENTIFIED BY '%[2]s' WITH MAX_USER_CONNECTIONS %[4]d;
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%[1]s'@'localhost';
-GRANT SELECT, SHOW VIEW ON `+"`%[3]s`"+`.* TO '%[1]s'@'localhost';`, aiUser, password, vars[e.dbVar]))
+GRANT SELECT, SHOW VIEW ON `+"`%[3]s`"+`.* TO '%[1]s'@'localhost';`, user, password, vars[e.dbVar], maxConns))
 		return err
 	}
+	return errors.New(e.Label + " has no SQL user to create")
 }
 
 // DisableAIAccess removes the read-only user and ends its sessions.
@@ -217,9 +238,15 @@ func (m *Manager) DisableAIAccess(ctx context.Context, app *store.App) error {
 	if !e.AIAccess {
 		return nil // never turned on
 	}
+	return m.dropSQLUser(ctx, app, aiUser)
+}
+
+// dropSQLUser removes a read-only SQL user and ends its sessions.
+func (m *Manager) dropSQLUser(ctx context.Context, app *store.App, user string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	switch e.Key {
+	var err error
+	switch app.Kind {
 	case "postgres":
 		_, err = m.adminExec(ctx, app, fmt.Sprintf(`DO $$BEGIN
 IF EXISTS (SELECT FROM pg_roles WHERE rolname = '%[1]s') THEN
@@ -227,9 +254,9 @@ IF EXISTS (SELECT FROM pg_roles WHERE rolname = '%[1]s') THEN
   EXECUTE 'DROP OWNED BY %[1]s';
   EXECUTE 'DROP ROLE %[1]s';
 END IF;
-END$$;`, aiUser))
-	default:
-		_, err = m.adminExec(ctx, app, fmt.Sprintf(`DROP USER IF EXISTS '%s'@'localhost';`, aiUser))
+END$$;`, user))
+	case "mysql", "mariadb":
+		_, err = m.adminExec(ctx, app, fmt.Sprintf(`DROP USER IF EXISTS '%s'@'localhost';`, user))
 	}
 	return err
 }
@@ -267,6 +294,19 @@ func cleanQuery(q string) (string, error) {
 
 // AIQuery runs q as the read-only user and returns at most AIMaxRows rows.
 func (m *Manager) AIQuery(ctx context.Context, app *store.App, password, q string) (*QueryResult, error) {
+	e, _, err := m.dbVars(app)
+	if err != nil {
+		return nil, err
+	}
+	if !e.AIAccess {
+		return nil, errNoAIAccess
+	}
+	return m.sqlQuery(ctx, app, aiUser, password, q, aiQueryTimeout, AIMaxRows, false)
+}
+
+// sqlQuery runs q on a SQL database as a read-only user, in a read-only
+// session with a statement timeout, and returns at most maxRows rows.
+func (m *Manager) sqlQuery(ctx context.Context, app *store.App, user, password, q string, timeout time.Duration, maxRows int, explain bool) (*QueryResult, error) {
 	q, err := cleanQuery(q)
 	if err != nil {
 		return nil, err
@@ -275,46 +315,62 @@ func (m *Manager) AIQuery(ctx context.Context, app *store.App, password, q strin
 	if err != nil {
 		return nil, err
 	}
-	if !e.AIAccess {
-		return nil, errNoAIAccess
-	}
-	ctx, cancel := context.WithTimeout(ctx, aiQueryTimeout+10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
-	sql := wrapLimit(q, AIMaxRows+1)
+	sql := wrapLimit(q, maxRows+1)
+	if explain {
+		sql = explainSQL(q)
+	}
+	max := int64(aiMaxOutput)
+	if user != aiUser {
+		max = queryMaxOutput
+	}
 	switch e.Key {
 	case "postgres":
-		out, err := m.exec(ctx, app, []string{"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "--csv", "-P", "null=" + pgNullMarker,
-			"-U", aiUser, "-d", vars[e.dbVar], "-c", sql},
-			[]string{"PGPASSWORD=" + password, fmt.Sprintf("PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=%d", aiQueryTimeout.Milliseconds())})
+		out, err := m.execMax(ctx, app, []string{"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "--csv", "-P", "null=" + pgNullMarker,
+			"-U", user, "-d", vars[e.dbVar], "-c", sql},
+			[]string{"PGPASSWORD=" + password, fmt.Sprintf("PGOPTIONS=-c default_transaction_read_only=on -c statement_timeout=%d", timeout.Milliseconds())}, max)
 		if err != nil {
 			return nil, err
 		}
-		return parseCSV(out)
-	default:
-		timeout := fmt.Sprintf("SET SESSION max_execution_time=%d;", aiQueryTimeout.Milliseconds())
+		return parseCSVMax(out, maxRows)
+	case "mysql", "mariadb":
+		to := fmt.Sprintf("SET SESSION max_execution_time=%d;", timeout.Milliseconds())
 		if e.Key == "mariadb" {
-			timeout = fmt.Sprintf("SET SESSION max_statement_time=%d;", int(aiQueryTimeout.Seconds()))
+			to = fmt.Sprintf("SET SESSION max_statement_time=%d;", int(timeout.Seconds()))
 		}
-		out, err := m.exec(ctx, app, []string{mysqlClient(e), "--batch", "--default-character-set=utf8mb4",
-			"-u", aiUser, "-D", vars[e.dbVar], "-e", "SET SESSION TRANSACTION READ ONLY; " + timeout + "\n" + sql},
-			[]string{"MYSQL_PWD=" + password})
+		out, err := m.execMax(ctx, app, []string{mysqlClient(e), "--batch", "--default-character-set=utf8mb4",
+			"-u", user, "-D", vars[e.dbVar], "-e", "SET SESSION TRANSACTION READ ONLY; " + to + "\n" + sql},
+			[]string{"MYSQL_PWD=" + password}, max)
 		if err != nil {
 			return nil, err
 		}
-		return parseTSV(out), nil
+		return parseTSVMax(out, maxRows), nil
 	}
+	return nil, errors.New(e.Label + " doesn't run SQL")
 }
 
-func capRows(r *QueryResult) *QueryResult {
-	if len(r.Rows) > AIMaxRows {
-		r.Rows = r.Rows[:AIMaxRows]
+// explainSQL asks the database for q's plan instead of its rows.
+func explainSQL(q string) string {
+	head := strings.ToLower(strings.TrimSpace(q))
+	if strings.HasPrefix(head, "explain") || strings.HasPrefix(head, "describe") {
+		return q
+	}
+	return "EXPLAIN " + q
+}
+
+func capRows(r *QueryResult, max int) *QueryResult {
+	if len(r.Rows) > max {
+		r.Rows = r.Rows[:max]
 		r.Truncated = true
 	}
 	r.RowCount = len(r.Rows)
 	return r
 }
 
-func parseCSV(out string) (*QueryResult, error) {
+func parseCSV(out string) (*QueryResult, error) { return parseCSVMax(out, AIMaxRows) }
+
+func parseCSVMax(out string, max int) (*QueryResult, error) {
 	r := csv.NewReader(strings.NewReader(out))
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
@@ -340,16 +396,18 @@ func parseCSV(out string) (*QueryResult, error) {
 			res.Rows = append(res.Rows, row)
 		}
 	}
-	return capRows(res), nil
+	return capRows(res, max), nil
 }
 
 // parseTSV reads mysql --batch output: tab-separated with a header line,
 // NULL for nulls, and \t \n \\ \0 escapes.
-func parseTSV(out string) *QueryResult {
+func parseTSV(out string) *QueryResult { return parseTSVMax(out, AIMaxRows) }
+
+func parseTSVMax(out string, max int) *QueryResult {
 	res := &QueryResult{Columns: []string{}, Rows: [][]any{}}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) == 0 || lines[0] == "" {
-		return capRows(res)
+		return capRows(res, max)
 	}
 	unescape := strings.NewReplacer(`\t`, "\t", `\n`, "\n", `\0`, "\x00", `\\`, `\`)
 	for i, l := range lines {
@@ -370,7 +428,7 @@ func parseTSV(out string) *QueryResult {
 		}
 		res.Rows = append(res.Rows, row)
 	}
-	return capRows(res)
+	return capRows(res, max)
 }
 
 // sqlString quotes s as an SQL string literal. MySQL also treats
@@ -384,35 +442,47 @@ func sqlString(s string, mysql bool) string {
 
 // AIListTables lists tables and views with approximate row counts.
 func (m *Manager) AIListTables(ctx context.Context, app *store.App, password string) (*QueryResult, error) {
-	if app.Kind == "postgres" {
-		return m.AIQuery(ctx, app, password, `SELECT t.table_schema AS schema, t.table_name AS name, t.table_type AS type,
+	return m.AIQuery(ctx, app, password, listTablesSQL(app.Kind))
+}
+
+func listTablesSQL(kind string) string {
+	if kind == "postgres" {
+		return `SELECT t.table_schema AS schema, t.table_name AS name, t.table_type AS type,
   c.reltuples::bigint AS approx_rows
 FROM information_schema.tables t
 LEFT JOIN pg_namespace n ON n.nspname = t.table_schema
 LEFT JOIN pg_class c ON c.relname = t.table_name AND c.relnamespace = n.oid
 WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema') AND t.table_schema NOT LIKE 'pg_toast%'
-ORDER BY 1, 2`)
+ORDER BY 1, 2`
 	}
-	return m.AIQuery(ctx, app, password, `SELECT table_name AS name, table_type AS type, table_rows AS approx_rows
-FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 1`)
+	return `SELECT table_name AS name, table_type AS type, table_rows AS approx_rows
+FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 1`
 }
 
 // AIDescribeTable lists a table's columns. table may be "schema.table" on
 // PostgreSQL; the default schema is public.
 func (m *Manager) AIDescribeTable(ctx context.Context, app *store.App, password, table string) (*QueryResult, error) {
+	q, err := describeTableSQL(app.Kind, table)
+	if err != nil {
+		return nil, err
+	}
+	return m.AIQuery(ctx, app, password, q)
+}
+
+func describeTableSQL(kind, table string) (string, error) {
 	table = strings.TrimSpace(table)
 	if table == "" || len(table) > 200 {
-		return nil, errors.New("table is required")
+		return "", errors.New("table is required")
 	}
-	if app.Kind == "postgres" {
+	if kind == "postgres" {
 		schema, name, ok := strings.Cut(table, ".")
 		if !ok {
 			schema, name = "public", table
 		}
-		return m.AIQuery(ctx, app, password, fmt.Sprintf(`SELECT column_name AS column, data_type AS type, is_nullable AS nullable, column_default AS "default"
+		return fmt.Sprintf(`SELECT column_name AS column, data_type AS type, is_nullable AS nullable, column_default AS "default"
 FROM information_schema.columns WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position`,
-			sqlString(schema, false), sqlString(name, false)))
+			sqlString(schema, false), sqlString(name, false)), nil
 	}
-	return m.AIQuery(ctx, app, password, fmt.Sprintf(`SELECT column_name AS `+"`column`"+`, column_type AS type, is_nullable AS nullable, column_default AS `+"`default`"+`, column_key AS `+"`key`"+`
-FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s ORDER BY ordinal_position`, sqlString(table, true)))
+	return fmt.Sprintf(`SELECT column_name AS `+"`column`"+`, column_type AS type, is_nullable AS nullable, column_default AS `+"`default`"+`, column_key AS `+"`key`"+`
+FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = %s ORDER BY ordinal_position`, sqlString(table, true)), nil
 }

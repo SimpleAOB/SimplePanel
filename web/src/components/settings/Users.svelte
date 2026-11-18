@@ -30,17 +30,23 @@
 
   function openNew() {
     formErr = '';
-    editing = { username: '', role: 'developer', allProjects: false, access: {} };
+    editing = { username: '', role: 'developer', allProjects: false, access: {}, dbQuery: false };
   }
   function openEdit(u) {
     formErr = '';
-    editing = { id: u.id, username: u.username, role: u.role, allProjects: u.allProjects, access: { ...u.access } };
+    editing = { id: u.id, username: u.username, role: u.role, allProjects: u.allProjects, access: { ...u.access }, dbQuery: u.dbQuery };
   }
 
   async function save(e) {
     e.preventDefault();
     formErr = '';
-    const body = { username: editing.username, role: editing.role, allProjects: editing.allProjects, access: editing.allProjects ? {} : editing.access };
+    const body = {
+      username: editing.username,
+      role: editing.role,
+      allProjects: editing.allProjects,
+      access: editing.allProjects ? {} : editing.access,
+      dbQuery: editing.role !== 'admin' && editing.dbQuery,
+    };
     try {
       if (editing.id) {
         await api.put(`/users/${editing.id}`, body);
@@ -115,6 +121,7 @@
             {u.username}
             <span class="role {u.role}">{roleLabels[u.role]}</span>
             {#if u.pending}<span class="pending">Invite not used yet</span>{/if}
+            {#if u.dbQuery}<span class="perm" title="Can run read-only queries in the databases of their projects">Query databases</span>{/if}
           </div>
           <div class="faint small">{accessSummary(u)}</div>
         </div>
@@ -142,6 +149,9 @@
           <span class="dot" class:failed={!e.ok} class:succeeded={e.ok}></span>
           <div class="grow">
             <div>{e.action.replaceAll('_', ' ')} {#if e.target}<span class="faint">· {e.target}</span>{/if}</div>
+            {#if e.args && e.action.includes('quer') || e.action === 'browse table'}
+              <div class="faint small mono q">{(() => { try { return JSON.parse(e.args).query; } catch { return ''; } })()}</div>
+            {/if}
             {#if !e.ok && e.error}<div class="small fail">{e.error}</div>{/if}
           </div>
           <div class="faint small when">{e.username || e.tokenName}{e.source === 'mcp' ? ' (AI)' : ''}<br />{timeAgo(e.createdAt)}</div>
@@ -200,6 +210,15 @@
           {/if}
         </div>
       {/if}
+      <div class="field">
+        <span>Permissions</span>
+        {#if editing.role === 'admin'}
+          <small>Admins can always query databases (read-only).</small>
+        {:else}
+          <label class="check"><input type="checkbox" bind:checked={editing.dbQuery} /> Query databases (read-only)</label>
+          <small>Lets them browse tables and run read-only queries on the databases in their projects. Queries go through a read-only database user and are listed in Activity.</small>
+        {/if}
+      </div>
       {#if formErr}<p class="error">{formErr}</p>{/if}
       <div class="row end">
         <button type="button" class="btn ghost" onclick={() => (editing = null)}>Cancel</button>
@@ -295,6 +314,20 @@
   .pending {
     border-color: var(--sp-warning);
     color: var(--sp-warning);
+  }
+  .perm {
+    font-size: var(--sp-text-xs);
+    font-weight: var(--sp-weight-bold);
+    padding: 1px var(--sp-space-2);
+    border-radius: var(--sp-radius-round);
+    border: 1px solid var(--sp-success);
+    color: var(--sp-success);
+  }
+  .q {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 640px;
   }
   .actions {
     display: flex;
