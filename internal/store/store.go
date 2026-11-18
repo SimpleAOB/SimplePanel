@@ -245,6 +245,67 @@ var migrations = []string{
 		created_at INTEGER NOT NULL,
 		finished_at INTEGER
 	);`,
+	// v6 (SimplePanel 0.3): Git providers (GitHub Apps and GitLab), auto
+	// deploys and pull request previews, SSH deploy keys, cron jobs.
+	`CREATE TABLE git_providers (
+		id INTEGER PRIMARY KEY,
+		kind TEXT NOT NULL,
+		name TEXT NOT NULL,
+		base_url TEXT NOT NULL DEFAULT '',
+		app_id INTEGER NOT NULL DEFAULT 0,
+		slug TEXT NOT NULL DEFAULT '',
+		client_id TEXT NOT NULL DEFAULT '',
+		client_secret TEXT NOT NULL DEFAULT '',
+		private_key TEXT NOT NULL DEFAULT '',
+		token TEXT NOT NULL DEFAULT '',
+		webhook_secret TEXT NOT NULL,
+		owner TEXT NOT NULL DEFAULT '',
+		html_url TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	);
+	ALTER TABLE apps ADD COLUMN git_provider_id INTEGER REFERENCES git_providers(id) ON DELETE SET NULL;
+	ALTER TABLE apps ADD COLUMN git_repo TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN auto_deploy INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE apps ADD COLUMN previews INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE apps ADD COLUMN preview_env TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN parent_app_id INTEGER REFERENCES apps(id) ON DELETE CASCADE;
+	ALTER TABLE apps ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE apps ADD COLUMN pr_title TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN pr_url TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN pr_comment_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN deploy_key TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN deploy_key_pub TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN ssh_known_hosts TEXT NOT NULL DEFAULT '';
+	CREATE INDEX apps_parent ON apps(parent_app_id);
+	CREATE INDEX apps_repo ON apps(git_provider_id, git_repo);
+	ALTER TABLE deployments ADD COLUMN commit_sha TEXT NOT NULL DEFAULT '';
+	ALTER TABLE deployments ADD COLUMN commit_msg TEXT NOT NULL DEFAULT '';
+
+	CREATE TABLE cron_jobs (
+		id INTEGER PRIMARY KEY,
+		app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		schedule TEXT NOT NULL,
+		command TEXT NOT NULL,
+		timeout INTEGER NOT NULL DEFAULT 3600,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		next_run_at INTEGER,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX cron_jobs_app ON cron_jobs(app_id);
+	CREATE TABLE cron_runs (
+		id INTEGER PRIMARY KEY,
+		job_id INTEGER NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,
+		status TEXT NOT NULL,
+		trigger TEXT NOT NULL,
+		exit_code INTEGER,
+		output TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		finished_at INTEGER
+	);
+	CREATE INDEX cron_runs_job ON cron_runs(job_id, id DESC);
+
+	ALTER TABLE api_tokens ADD COLUMN api_access INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate() error {
@@ -449,7 +510,31 @@ type App struct {
 	HTTPPort     int      `json:"httpPort"`   // port the auto domain routes to; 0 = from domains or 80
 	CreatedAt    int64    `json:"createdAt"`
 	UpdatedAt    int64    `json:"updatedAt"`
+
+	// Git integration (0.3). A linked app is connected to a GitHub App or
+	// GitLab provider and a repository ("owner/name"); its clone token
+	// comes from the provider.
+	GitProviderID int64  `json:"gitProviderId"`
+	GitRepo       string `json:"gitRepo"`
+	AutoDeploy    bool   `json:"autoDeploy"` // deploy on push to the branch (linked apps)
+	Previews      bool   `json:"previews"`   // deploy a preview for each pull request
+	PreviewEnv    string `json:"previewEnv"` // KEY=value overrides for previews
+
+	// Pull request previews are apps with a parent.
+	ParentAppID int64  `json:"parentAppId"`
+	PRNumber    int    `json:"prNumber"`
+	PRTitle     string `json:"prTitle"`
+	PRURL       string `json:"prUrl"`
+	PRCommentID string `json:"-"`
+
+	// SSH deploy key for git@ URLs. The private key never leaves the server.
+	DeployKey     string `json:"-"`
+	DeployKeyPub  string `json:"deployKeyPub"`
+	SSHKnownHosts string `json:"-"`
 }
+
+// IsPreview reports whether the app is a pull request preview.
+func (a *App) IsPreview() bool { return a.ParentAppID != 0 }
 
 // ServiceName is the Swarm service name for the app. Names are limited to
 // [a-z0-9-], so the underscore separator cannot be ambiguous.
@@ -461,7 +546,8 @@ func (a *App) IsDatabase() bool { return a.Kind != "" && a.Kind != "app" }
 const appCols = `a.id,a.project_id,p.name,a.name,a.kind,a.source,a.image,a.git_url,a.git_branch,a.git_token,
 	a.build_path,a.dockerfile,a.env,a.replicas,a.cpu_limit,a.memory_mb,a.command,a.volumes,a.ports,
 	a.webhook_token,a.created_at,a.updated_at,a.build_type,a.build_image,a.build_command,a.output_dir,a.spa,
-	a.auto_domain,a.http_port`
+	a.auto_domain,a.http_port,COALESCE(a.git_provider_id,0),a.git_repo,a.auto_deploy,a.previews,a.preview_env,
+	COALESCE(a.parent_app_id,0),a.pr_number,a.pr_title,a.pr_url,a.pr_comment_id,a.deploy_key,a.deploy_key_pub,a.ssh_known_hosts`
 
 type scanner interface{ Scan(...any) error }
 
@@ -471,7 +557,9 @@ func scanApp(r scanner) (*App, error) {
 	err := r.Scan(&a.ID, &a.ProjectID, &a.ProjectName, &a.Name, &a.Kind, &a.Source, &a.Image, &a.GitURL, &a.GitBranch,
 		&a.GitToken, &a.BuildPath, &a.Dockerfile, &a.Env, &a.Replicas, &a.CPULimit, &a.MemoryMB, &a.Command,
 		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt,
-		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA, &a.AutoDomain, &a.HTTPPort)
+		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA, &a.AutoDomain, &a.HTTPPort,
+		&a.GitProviderID, &a.GitRepo, &a.AutoDeploy, &a.Previews, &a.PreviewEnv,
+		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -531,11 +619,15 @@ func (s *Store) CreateApp(ctx context.Context, a *App) error {
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO apps(project_id,name,kind,source,image,git_url,git_branch,git_token,
 		build_path,dockerfile,env,replicas,cpu_limit,memory_mb,command,volumes,ports,webhook_token,created_at,updated_at,
-		build_type,build_image,build_command,output_dir,spa,auto_domain,http_port)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		build_type,build_image,build_command,output_dir,spa,auto_domain,http_port,
+		git_provider_id,git_repo,auto_deploy,previews,preview_env,parent_app_id,pr_number,pr_title,pr_url,
+		deploy_key,deploy_key_pub,ssh_known_hosts)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ProjectID, a.Name, a.Kind, a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile,
 		a.Env, a.Replicas, a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.WebhookToken, t, t,
-		a.BuildType, a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort)
+		a.BuildType, a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort,
+		nullID(a.GitProviderID), a.GitRepo, a.AutoDeploy, a.Previews, a.PreviewEnv, nullID(a.ParentAppID), a.PRNumber, a.PRTitle, a.PRURL,
+		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -551,11 +643,69 @@ func (s *Store) UpdateApp(ctx context.Context, a *App) error {
 	a.UpdatedAt = now()
 	_, err := s.db.ExecContext(ctx, `UPDATE apps SET source=?,image=?,git_url=?,git_branch=?,git_token=?,build_path=?,
 		dockerfile=?,env=?,replicas=?,cpu_limit=?,memory_mb=?,command=?,volumes=?,ports=?,updated_at=?,
-		build_type=?,build_image=?,build_command=?,output_dir=?,spa=?,auto_domain=?,http_port=? WHERE id=?`,
+		build_type=?,build_image=?,build_command=?,output_dir=?,spa=?,auto_domain=?,http_port=?,
+		git_provider_id=?,git_repo=?,auto_deploy=?,previews=?,preview_env=?,pr_title=?,pr_url=?,pr_comment_id=?,
+		deploy_key=?,deploy_key_pub=?,ssh_known_hosts=? WHERE id=?`,
 		a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile, a.Env, a.Replicas,
 		a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.UpdatedAt,
-		orAuto(a.BuildType), a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort, a.ID)
+		orAuto(a.BuildType), a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort,
+		nullID(a.GitProviderID), a.GitRepo, a.AutoDeploy, a.Previews, a.PreviewEnv, a.PRTitle, a.PRURL, a.PRCommentID,
+		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts, a.ID)
 	return mapErr(err)
+}
+
+// nullID stores 0 as NULL, for optional foreign keys.
+func nullID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
+// AppsByRepo lists the non-preview apps linked to a repository of a Git
+// provider. Repository names compare case-insensitively.
+func (s *Store) AppsByRepo(ctx context.Context, providerID int64, repo string) ([]App, error) {
+	return s.queryApps(ctx, ` WHERE a.git_provider_id=? AND lower(a.git_repo)=lower(?) AND a.parent_app_id IS NULL ORDER BY a.id`, providerID, repo)
+}
+
+// Previews lists an app's pull request previews.
+func (s *Store) Previews(ctx context.Context, parentID int64) ([]App, error) {
+	return s.queryApps(ctx, ` WHERE a.parent_app_id=? ORDER BY a.pr_number`, parentID)
+}
+
+// Preview finds the preview of a pull request.
+func (s *Store) Preview(ctx context.Context, parentID int64, pr int) (*App, error) {
+	return scanApp(s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps a JOIN projects p ON p.id=a.project_id
+		WHERE a.parent_app_id=? AND a.pr_number=?`, parentID, pr))
+}
+
+// CreatePreview stores a pull request preview of a.
+func (s *Store) CreatePreview(ctx context.Context, a *App, parentID int64, pr int) error {
+	a.ParentAppID, a.PRNumber = parentID, pr
+	return s.CreateApp(ctx, a)
+}
+
+func (s *Store) queryApps(ctx context.Context, where string, args ...any) ([]App, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+appCols+` FROM apps a JOIN projects p ON p.id=a.project_id`+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []App{}
+	for rows.Next() {
+		a, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+// AppByName finds an app by project and app name.
+func (s *Store) AppByName(ctx context.Context, project, name string) (*App, error) {
+	return scanApp(s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps a JOIN projects p ON p.id=a.project_id
+		WHERE p.name=? AND a.name=?`, project, name))
 }
 
 func (s *Store) RotateWebhook(ctx context.Context, id int64) (string, error) {
@@ -649,6 +799,8 @@ type Deployment struct {
 	Status     string `json:"status"` // queued|running|succeeded|failed
 	Trigger    string `json:"trigger"`
 	Image      string `json:"image"`
+	CommitSHA  string `json:"commitSha"`
+	CommitMsg  string `json:"commitMsg"`
 	Log        string `json:"log,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	FinishedAt *int64 `json:"finishedAt"`
@@ -676,7 +828,7 @@ func (s *Store) UpdateDeployment(ctx context.Context, id int64, status, image, l
 }
 
 func (s *Store) Deployments(ctx context.Context, appID int64, limit int) ([]Deployment, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app_id,status,trigger,image,created_at,finished_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id,app_id,status,trigger,image,commit_sha,commit_msg,created_at,finished_at
 		FROM deployments WHERE app_id=? ORDER BY id DESC LIMIT ?`, appID, limit)
 	if err != nil {
 		return nil, err
@@ -685,7 +837,7 @@ func (s *Store) Deployments(ctx context.Context, appID int64, limit int) ([]Depl
 	out := []Deployment{}
 	for rows.Next() {
 		var d Deployment
-		if err := rows.Scan(&d.ID, &d.AppID, &d.Status, &d.Trigger, &d.Image, &d.CreatedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.AppID, &d.Status, &d.Trigger, &d.Image, &d.CommitSHA, &d.CommitMsg, &d.CreatedAt, &d.FinishedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -695,9 +847,18 @@ func (s *Store) Deployments(ctx context.Context, appID int64, limit int) ([]Depl
 
 func (s *Store) Deployment(ctx context.Context, id int64) (*Deployment, error) {
 	var d Deployment
-	err := s.db.QueryRowContext(ctx, `SELECT id,app_id,status,trigger,image,log,created_at,finished_at FROM deployments WHERE id=?`, id).
-		Scan(&d.ID, &d.AppID, &d.Status, &d.Trigger, &d.Image, &d.Log, &d.CreatedAt, &d.FinishedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,app_id,status,trigger,image,commit_sha,commit_msg,log,created_at,finished_at FROM deployments WHERE id=?`, id).
+		Scan(&d.ID, &d.AppID, &d.Status, &d.Trigger, &d.Image, &d.CommitSHA, &d.CommitMsg, &d.Log, &d.CreatedAt, &d.FinishedAt)
 	return &d, mapErr(err)
+}
+
+// SetDeploymentCommit records the commit a deployment built.
+func (s *Store) SetDeploymentCommit(ctx context.Context, id int64, sha, msg string) error {
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE deployments SET commit_sha=?, commit_msg=? WHERE id=?`, sha, msg, id)
+	return err
 }
 
 // FailStaleDeployments marks deployments interrupted by a restart as failed.

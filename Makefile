@@ -1,4 +1,4 @@
-.PHONY: ui build test run image
+.PHONY: ui build test run image cli
 
 VERSION ?= dev
 
@@ -18,3 +18,7 @@ run: build
 
 image:
 	docker build --build-arg VERSION=$(VERSION) -t simplepanel:$(VERSION) .
+
+# The `sp` command-line client.
+cli:
+	CGO_ENABLED=0 go build -ldflags "-X main.version=$(VERSION)" -o bin/sp ./cmd/sp

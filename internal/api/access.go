@@ -153,6 +153,16 @@ var activityActions = map[string]string{
 	"GET /api/apps/{app}/backups/file":        "download backup",
 	"GET /api/backups/destinations/{id}/key":  "reveal backup passphrase",
 	"POST /api/backups/destinations/{id}/key": "reveal backup passphrase",
+	"PATCH /api/apps/{id}/env":                "change environment variables",
+	"DELETE /api/git/providers/{id}":          "disconnect Git provider",
+	"POST /api/git/gitlab":                    "connect GitLab",
+	"PUT /api/git/providers/{id}":             "change Git provider",
+	"POST /api/apps/{id}/deploy-key":          "create deploy key",
+	"DELETE /api/apps/{id}/deploy-key":        "remove deploy key",
+	"POST /api/apps/{id}/cron":                "add cron job",
+	"PUT /api/cron/{id}":                      "change cron job",
+	"DELETE /api/cron/{id}":                   "remove cron job",
+	"POST /api/cron/{id}/run":                 "run cron job",
 }
 
 // activityTarget names what a request acts on, looked up before the
@@ -168,6 +178,12 @@ func (s *Server) activityTarget(r *http.Request) string {
 			}
 		case strings.Contains(r.Pattern, "/projects/{id}"):
 			if p, err := s.store.Project(ctx, id); err == nil {
+				target = p.Name
+			}
+		case strings.Contains(r.Pattern, "/cron/{id}"):
+			target = s.cronTarget(r)
+		case strings.Contains(r.Pattern, "/git/providers/{id}"):
+			if p, err := s.store.GitProvider(ctx, id); err == nil {
 				target = p.Name
 			}
 		case strings.Contains(r.Pattern, "/users/{id}"):
@@ -190,6 +206,9 @@ func (s *Server) recordActivity(r *http.Request, u *store.User, target string, c
 	}
 	ctx := context.WithoutCancel(r.Context())
 	e := &store.AuditEntry{Source: "ui", UserID: &u.ID, Username: u.Username, Action: action, Target: target, OK: code < 400}
+	if u.Token != nil {
+		e.Source, e.TokenID, e.TokenName = "api", &u.Token.ID, u.Token.Name
+	}
 	if code >= 400 {
 		e.Error = http.StatusText(code)
 	}

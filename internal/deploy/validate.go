@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -37,11 +38,19 @@ func ValidImage(s string) error {
 	return nil
 }
 
-// ValidGitURL accepts only https URLs without embedded credentials.
+// ValidGitURL accepts https URLs without embedded credentials, and SSH
+// URLs (git@host:owner/repo.git or ssh://git@host[:port]/path) for
+// repositories cloned with a deploy key.
 func ValidGitURL(s string) error {
+	if IsSSHURL(s) {
+		if _, _, err := ParseSSHURL(s); err != nil {
+			return err
+		}
+		return nil
+	}
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path == "" || u.Path == "/" {
-		return errors.New("use an https:// Git URL, e.g. https://github.com/user/repo")
+		return errors.New("use an https:// Git URL (e.g. https://github.com/user/repo), or git@host:user/repo.git with a deploy key")
 	}
 	if u.User != nil {
 		return errors.New("don't put credentials in the URL; use the access token field")
@@ -50,6 +59,53 @@ func ValidGitURL(s string) error {
 		return errors.New("Git URL must not contain a query or fragment")
 	}
 	return nil
+}
+
+var (
+	scpURLRe  = regexp.MustCompile(`^([A-Za-z0-9._-]{1,64})@([A-Za-z0-9.-]{1,253}):([A-Za-z0-9._~/-]{1,300})$`)
+	sshPathRe = regexp.MustCompile(`^/[A-Za-z0-9._~/-]{1,300}$`)
+)
+
+// IsSSHURL reports whether s looks like an SSH Git URL.
+func IsSSHURL(s string) bool {
+	return strings.HasPrefix(s, "ssh://") || (!strings.Contains(s, "://") && strings.Contains(s, "@") && strings.Contains(s, ":"))
+}
+
+// ParseSSHURL returns the host (with :port when not 22) and path of an
+// SSH Git URL, rejecting anything ssh or git could read as an option.
+func ParseSSHURL(s string) (host, repoPath string, err error) {
+	bad := errors.New("use an SSH URL like git@github.com:user/repo.git")
+	if rest, ok := strings.CutPrefix(s, "ssh://"); ok {
+		u, perr := url.Parse("ssh://" + rest)
+		if perr != nil || u.User == nil || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" {
+			return "", "", bad
+		}
+		if _, set := u.User.Password(); set || !regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`).MatchString(u.User.Username()) {
+			return "", "", bad
+		}
+		if !sshPathRe.MatchString(u.Path) || strings.Contains(u.Path, "..") {
+			return "", "", bad
+		}
+		host = u.Hostname()
+		if p := u.Port(); p != "" && p != "22" {
+			if n, perr := strconv.Atoi(p); perr != nil || ValidPort(n) != nil {
+				return "", "", bad
+			}
+			host += ":" + p
+		}
+		repoPath = strings.TrimPrefix(u.Path, "/")
+	} else {
+		m := scpURLRe.FindStringSubmatch(s)
+		if m == nil || strings.Contains(m[3], "..") || strings.HasPrefix(m[3], "-") || strings.HasPrefix(m[3], "/") {
+			return "", "", bad
+		}
+		host, repoPath = m[2], m[3]
+	}
+	h, _, _ := strings.Cut(host, ":")
+	if strings.HasPrefix(h, "-") || strings.HasPrefix(h, ".") || (ValidHost(strings.ToLower(h)) != nil && net.ParseIP(h) == nil && h != "localhost") {
+		return "", "", bad
+	}
+	return host, repoPath, nil
 }
 
 // ValidBranch checks a branch name and rejects option-like values.

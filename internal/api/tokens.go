@@ -33,6 +33,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, u *store.Us
 	var body struct {
 		Name  string `json:"name"`
 		Scope string `json:"scope"`
+		API   bool   `json:"api"` // may also call the REST API (scripts, CI, CLI)
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -46,12 +47,12 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, u *store.Us
 		writeErr(w, 400, `scope must be "read", "manage" or "full"`)
 		return
 	}
-	t, secret, err := s.store.CreateAPIToken(r.Context(), body.Name, body.Scope, u)
+	t, secret, err := s.store.CreateAPIToken(r.Context(), body.Name, body.Scope, u, body.API)
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
-	s.log.Info("API token created", "name", t.Name, "scope", t.Scope, "user", u.Username)
+	s.log.Info("API token created", "name", t.Name, "scope", t.Scope, "api", t.API, "user", u.Username)
 	// The secret is only ever returned here.
 	writeJSON(w, 201, map[string]any{"token": t, "secret": secret})
 }
@@ -85,7 +86,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, u *store.User
 		only = u.ID
 	}
 	source := r.URL.Query().Get("source")
-	if source != "ui" && source != "mcp" {
+	if source != "ui" && source != "mcp" && source != "api" {
 		source = ""
 	}
 	es, err := s.store.Audit(r.Context(), limit, only, source)

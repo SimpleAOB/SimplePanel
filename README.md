@@ -89,6 +89,30 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 Server monitoring reads the host's `/proc`, which the installer mounts
 read-only. Re-run the install command to add it to an existing install.
 
+## New in v0.3
+
+- **GitHub and GitLab**: connect once under Settings → Git, then pick
+  repositories and branches from a list instead of pasting URLs. For GitHub,
+  SimplePanel creates a private GitHub App that belongs to you, for your
+  server only (no central app, nothing goes through anyone else's servers).
+  GitLab (gitlab.com or your own) connects with an access token.
+- **Deploy on push**, with the result shown on the commit in GitHub or
+  GitLab, and the commit message in the deployment list.
+- **Pull request previews**: each pull request gets its own copy of the app
+  at its own automatic subdomain, updated on every push and removed when the
+  pull request closes. A comment on the pull request links to it. Previews
+  can override variables (for example a staging database), and pull
+  requests from forks are skipped so outside code never runs on your server.
+- **Deploy keys**: for repositories you don't want to connect, SimplePanel
+  can create an SSH deploy key to add to the repository (read-only), and use
+  a `git@` URL.
+- **Cron jobs**: run a command on a schedule inside a service's running
+  container, with presets such as "every hour", a timeout, run history with
+  output, "Run now", and a notification when a job fails.
+- **API and CLI**: a REST API with Bearer tokens and the `sp` command-line
+  tool for scripts and CI (`sp deploy shop/web --wait`). See
+  [docs/API.md](docs/API.md).
+
 ## Deploy webhooks
 
 Every app has a secret webhook URL (Overview tab, with Advanced view on).
@@ -102,8 +126,10 @@ curl -X POST "https://panel.example.com/api/hooks/deploy/<token>?tag=1.4.2"
 ```
 
 You can also paste the URL into a GitHub or GitLab repository's webhook
-settings. Push events to the app's branch (or the repository's default
-branch) trigger a deploy; other branches and events are ignored.
+settings (or connect GitHub or GitLab under Settings → Git, which sets this
+up for you). Push events to the app's branch (or the repository's default
+branch) trigger a deploy, and pull request events start previews when the
+app has them on; other branches and events are ignored.
 
 Treat the URL like a password. Regenerate it from the UI if it leaks.
 

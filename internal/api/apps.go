@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/docker"
+	"github.com/SimpleAOB/SimplePanel/internal/gitprovider"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 )
 
@@ -149,7 +149,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.
 		return
 	}
 	for i := range apps {
-		if err := s.deploy.Remove(r.Context(), &apps[i]); err != nil {
+		if err := s.removeApp(r.Context(), &apps[i]); err != nil {
 			writeErr(w, 502, fmt.Sprintf("removing app %s failed: %v", apps[i].Name, err))
 			return
 		}
@@ -225,6 +225,13 @@ type appInput struct {
 	Ports         []store.Port   `json:"ports"`
 	AutoDomain    *bool          `json:"autoDomain"`
 	HTTPPort      *int           `json:"httpPort"`
+
+	// Git integration; nil keeps the current value.
+	GitProviderID *int64  `json:"gitProviderId"`
+	GitRepo       *string `json:"gitRepo"`
+	AutoDeploy    *bool   `json:"autoDeploy"`
+	Previews      *bool   `json:"previews"`
+	PreviewEnv    *string `json:"previewEnv"`
 }
 
 // apply validates in and copies it onto a.
@@ -343,6 +350,23 @@ func (in *appInput) apply(a *store.App) error {
 		}
 		a.HTTPPort = *in.HTTPPort
 	}
+	if in.AutoDeploy != nil {
+		a.AutoDeploy = *in.AutoDeploy
+	} else if a.ID == 0 {
+		a.AutoDeploy = true
+	}
+	if in.Previews != nil {
+		a.Previews = *in.Previews && a.Source == "git" && !a.IsDatabase()
+	}
+	if in.PreviewEnv != nil {
+		if _, err := deploy.ParseEnv(*in.PreviewEnv); err != nil {
+			return fmt.Errorf("preview variables: %w", err)
+		}
+		a.PreviewEnv = *in.PreviewEnv
+	}
+	if a.Source != "git" {
+		a.GitProviderID, a.GitRepo, a.Previews = 0, "", false
+	}
 	a.Ports = []store.Port{}
 	for _, p := range in.Ports {
 		if p.Protocol == "" {
@@ -389,6 +413,12 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request, u *store.User
 	if err := in.apply(a); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if in.GitProviderID != nil && *in.GitProviderID != 0 {
+		if err := s.linkRepo(r, a, *in.GitProviderID, deref(in.GitRepo)); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if err := s.store.CreateApp(r.Context(), a); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -497,14 +527,20 @@ func (s *Server) loadAppID(w http.ResponseWriter, r *http.Request, u *store.User
 // redactApp removes values only users who can deploy may see: environment
 // variable values (names are kept) and Git tokens.
 func redactApp(a *store.App) {
+	a.Env = keysOnly(a.Env)
+	a.PreviewEnv = keysOnly(a.PreviewEnv)
+}
+
+func keysOnly(env string) string {
 	var keys []string
-	for _, k := range envKeys(a.Env) {
+	for _, k := range envKeys(env) {
 		keys = append(keys, k+"=")
 	}
-	a.Env = strings.Join(keys, "\n")
-	if a.Env != "" {
-		a.Env += "\n"
+	out := strings.Join(keys, "\n")
+	if out != "" {
+		out += "\n"
 	}
+	return out
 }
 
 func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
@@ -533,6 +569,24 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if lvl >= store.LevelDeploy {
 		out["webhookPath"] = "/api/hooks/deploy/" + a.WebhookToken
 	}
+	if a.Source == "git" {
+		if a.DeployKeyPub != "" {
+			out["deployKeyUrl"] = deploy.DeployKeyURL(a.GitURL)
+		}
+		if p := s.providerFor(a); p != nil {
+			out["provider"] = map[string]any{"id": p.ID, "kind": p.Kind, "name": p.Name}
+			web := strings.TrimSuffix(a.GitURL, ".git")
+			out["repoUrl"] = web
+		}
+		if a.IsPreview() {
+			if parent, err := s.store.App(r.Context(), a.ParentAppID); err == nil {
+				out["parent"] = map[string]any{"id": parent.ID, "name": parent.Name}
+			}
+		} else {
+			n, _ := s.store.Previews(r.Context(), a.ID)
+			out["previewCount"] = len(n)
+		}
+	}
 	if a.IsDatabase() {
 		info := deploy.DatabaseInfo(a)
 		if lvl < store.LevelDeploy && info != nil {
@@ -556,6 +610,10 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 	if !ok {
 		return
 	}
+	if a.IsPreview() {
+		writeErr(w, 409, "previews copy their settings from the app they preview; change that app instead")
+		return
+	}
 	prevAuto, prevPort := a.AutoDomain, a.HTTPPort
 	var in appInput
 	if !readJSON(w, r, &in) {
@@ -564,6 +622,12 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 	if err := in.apply(a); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if in.GitProviderID != nil && a.Source == "git" {
+		if err := s.linkRepo(r, a, *in.GitProviderID, deref(in.GitRepo)); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if err := s.store.UpdateApp(r.Context(), a); err != nil {
 		s.storeErr(w, err)
@@ -578,11 +642,15 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 }
 
 func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request, u *store.User) {
-	a, ok := s.loadApp(w, r, u, store.LevelManage)
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 	if !ok {
 		return
 	}
-	if err := s.deploy.Remove(r.Context(), a); err != nil {
+	// Previews are throwaway, so anyone who can deploy may remove one.
+	if !a.IsPreview() && !s.allow(w, r, u, a.ProjectID, store.LevelManage) {
+		return
+	}
+	if err := s.removeApp(r.Context(), a); err != nil {
 		writeErr(w, 502, "removing the service failed: "+err.Error())
 		return
 	}
@@ -785,8 +853,9 @@ var tagRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 //	curl -X POST https://panel.example.com/api/hooks/deploy/<token>
 //	curl -X POST ".../api/hooks/deploy/<token>?tag=1.4.2"   (image apps)
 //
-// GitHub and GitLab push webhooks can point at the same URL; pushes to
-// branches other than the app's branch are ignored.
+// GitHub and GitLab webhooks can point at the same URL: pushes to the app's
+// branch deploy, other branches are ignored, and pull request events manage
+// previews when the app has them turned on.
 func (s *Server) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 	if !s.hookLimit.Allow(clientIP(r)) {
 		writeErr(w, 429, "rate limited")
@@ -798,28 +867,42 @@ func (s *Server) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := s.store.AppByWebhook(r.Context(), tok)
-	if err != nil {
+	if err != nil || a.IsPreview() {
 		writeErr(w, 404, "not found")
 		return
 	}
 
-	trigger := "webhook"
-	if ev, ref, def, isPush := gitEvent(r); ev != "" {
-		if !isPush {
-			writeJSON(w, 200, map[string]string{"skipped": "event " + ev + " ignored; only pushes deploy"})
+	var ev *gitprovider.Event
+	switch {
+	case r.Header.Get("X-GitHub-Event") != "":
+		body, err := readHookBody(r)
+		if err == nil {
+			ev, err = gitprovider.ParseGitHub(r.Header.Get("X-GitHub-Event"), githubPayload(r, body))
+		}
+		if err != nil {
+			writeErr(w, 400, "invalid payload")
 			return
 		}
-		branch := a.GitBranch
-		if branch == "" {
-			branch = def
+	case r.Header.Get("X-Gitlab-Event") != "":
+		body, err := readHookBody(r)
+		if err == nil {
+			ev, err = gitprovider.ParseGitLab(r.Header.Get("X-Gitlab-Event"), body)
 		}
-		if branch != "" && ref != "refs/heads/"+branch {
-			writeJSON(w, 200, map[string]string{"skipped": "push to " + ref + " ignored; app deploys " + branch})
+		if err != nil {
+			writeErr(w, 400, "invalid payload")
 			return
 		}
-		trigger = "push"
+	}
+	if ev != nil {
+		if ev.Ignored() {
+			writeJSON(w, 200, map[string]string{"skipped": "event " + ev.Name + " ignored; only pushes and pull requests are used"})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"result": s.handleGitEvent(r, a, ev, false)})
+		return
 	}
 
+	trigger := "webhook"
 	if tag := r.URL.Query().Get("tag"); tag != "" {
 		if a.Source != "image" {
 			writeErr(w, 400, "tag override only applies to image apps")
@@ -846,38 +929,92 @@ func (s *Server) webhookDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, map[string]int64{"deploymentId": d.ID})
 }
 
-// gitEvent recognises GitHub/GitLab webhook deliveries. ev is empty for a
-// plain CI/CD call.
-func gitEvent(r *http.Request) (ev, ref, defaultBranch string, isPush bool) {
-	var payload struct {
-		Ref        string `json:"ref"`
-		Repository struct {
-			DefaultBranch string `json:"default_branch"`
-		} `json:"repository"`
-		Project struct {
-			DefaultBranch string `json:"default_branch"`
-		} `json:"project"`
+func deref(s *string) string {
+	if s == nil {
+		return ""
 	}
-	switch {
-	case r.Header.Get("X-GitHub-Event") != "":
-		ev = r.Header.Get("X-GitHub-Event")
-		isPush = ev == "push"
-	case r.Header.Get("X-Gitlab-Event") != "":
-		ev = r.Header.Get("X-Gitlab-Event")
-		isPush = ev == "Push Hook"
-	default:
-		return "", "", "", false
+	return *s
+}
+
+// getAppByName is getApp addressed as /api/services/{project}/{name}, for
+// scripts and the CLI.
+func (s *Server) getAppByName(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, err := s.store.AppByName(r.Context(), r.PathValue("project"), r.PathValue("name"))
+	if err != nil {
+		s.storeErr(w, err)
+		return
 	}
-	if isPush {
-		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
-			_ = json.Unmarshal([]byte(r.PostFormValue("payload")), &payload) // GitHub "form" content type
-		} else {
-			_ = json.NewDecoder(r.Body).Decode(&payload)
+	r.SetPathValue("id", strconv.FormatInt(a.ID, 10))
+	s.getApp(w, r, u)
+}
+
+// patchEnv sets and removes individual environment variables, leaving the
+// others as they are. With ?deploy=1 it deploys afterwards.
+//
+//	{"set": {"KEY": "value"}, "unset": ["OLD"]}
+func (s *Server) patchEnv(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelDeploy)
+	if !ok {
+		return
+	}
+	if a.IsPreview() {
+		writeErr(w, 409, "previews copy their variables from the app they preview")
+		return
+	}
+	var body struct {
+		Set   map[string]string `json:"set"`
+		Unset []string          `json:"unset"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	lines := []string{}
+	for k, v := range body.Set {
+		if strings.ContainsAny(v, "\r\n") {
+			writeErr(w, 400, k+": values can't contain line breaks")
+			return
 		}
-		defaultBranch = payload.Repository.DefaultBranch
-		if defaultBranch == "" {
-			defaultBranch = payload.Project.DefaultBranch
-		}
+		lines = append(lines, k+"="+v)
 	}
-	return ev, payload.Ref, defaultBranch, isPush
+	slices.Sort(lines)
+	over := strings.Join(lines, "\n")
+	if _, err := deploy.ParseEnv(over); err != nil {
+		writeErr(w, 400, "variable names use letters, digits and underscores")
+		return
+	}
+	env := deploy.MergeEnv(a.Env, over)
+	if len(body.Unset) > 0 {
+		drop := map[string]bool{}
+		for _, k := range body.Unset {
+			drop[k] = true
+		}
+		var keep []string
+		for _, line := range strings.Split(env, "\n") {
+			k, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if ok && drop[strings.TrimSpace(k)] {
+				continue
+			}
+			keep = append(keep, line)
+		}
+		env = strings.Join(keep, "\n")
+	}
+	if _, err := deploy.ParseEnv(env); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	a.Env = env
+	if err := s.store.UpdateApp(r.Context(), a); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	out := map[string]any{"keys": envKeys(a.Env)}
+	if r.URL.Query().Get("deploy") == "1" {
+		d, err := s.deploy.Deploy(r.Context(), a.ID, "env change")
+		if err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		out["deployment"] = d
+	}
+	writeJSON(w, 200, out)
 }

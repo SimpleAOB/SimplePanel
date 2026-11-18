@@ -9,6 +9,8 @@
   import Notifications from './settings/Notifications.svelte';
   import Monitoring from './settings/Monitoring.svelte';
   import Account from './settings/Account.svelte';
+  import Git from './settings/Git.svelte';
+  import ApiCli from './settings/ApiCli.svelte';
 
   let sections = $derived(settingsSections(isAdmin()));
   let current = $derived(sections.find((s) => s[0] === ui.route.section) ? ui.route.section : sections[0][0]);
@@ -32,6 +34,10 @@
     <Notifications />
   {:else if current === 'monitoring'}
     <Monitoring />
+  {:else if current === 'git'}
+    <Git />
+  {:else if current === 'api'}
+    <ApiCli />
   {:else if current === 'ai'}
     <ConnectAI />
   {:else}

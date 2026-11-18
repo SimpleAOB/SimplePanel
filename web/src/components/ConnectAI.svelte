@@ -148,6 +148,7 @@
             <div class="name">{t.name}</div>
             <div class="faint small">{#if t.username && t.username !== data.user?.username}{t.username} · {/if}Created {timeAgo(t.createdAt)} · {t.lastUsedAt ? `Last used ${timeAgo(t.lastUsedAt)}` : 'Never used'}</div>
           </div>
+          {#if t.api}<span class="scope" title="Can also use the REST API and CLI">API</span>{/if}
           <span class="scope {t.scope}">{scopeLabel[t.scope] || t.scope}</span>
           <button class="btn ghost small" onclick={() => revoke(t)}>Revoke</button>
         </li>

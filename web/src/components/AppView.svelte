@@ -10,6 +10,8 @@
   import ExportDialog from './ExportDialog.svelte';
   import Metrics from './Metrics.svelte';
   import BackupsView from './BackupsView.svelte';
+  import GitCard from './GitCard.svelte';
+  import CronJobs from './CronJobs.svelte';
 
   let exporting = $state(false);
 
@@ -37,12 +39,14 @@
   let level = $derived(detail?.level ?? 0);
   let canDeploy = $derived(level >= 2);
   let canManage = $derived(level >= 3);
+  let isPreview = $derived(!!detail?.app?.parentAppId);
   let tabs = $derived([
     ['overview', 'Overview'],
     ['metrics', 'Metrics'],
-    ...(detail?.backupKind ? [['backups', 'Backups']] : []),
-    ...(canDeploy ? [['environment', 'Environment']] : []),
+    ...(detail?.backupKind && !isPreview ? [['backups', 'Backups']] : []),
+    ...(canDeploy && !isPreview ? [['environment', 'Environment']] : []),
     ['deployments', 'Deployments'],
+    ...(!isPreview ? [['cron', 'Cron jobs']] : []),
     ['settings', 'Settings'],
   ]);
   let autoBusy = $state(false);
@@ -219,6 +223,20 @@
       <p class="error">The app is failing to start: {detail.status.message}</p>
     {/if}
 
+    {#if isPreview}
+      <section class="card preview-banner">
+        <div class="row between">
+          <span><Icon name="pr" size={16} /> Preview of pull request <strong>#{detail.app.prNumber}</strong> {detail.app.prTitle}</span>
+          {#if detail.app.prUrl}<a href={detail.app.prUrl} target="_blank" rel="noopener noreferrer">View pull request</a>{/if}
+        </div>
+        <small class="faint">
+          Built from <code>{detail.app.gitBranch}</code> with the settings of
+          {#if detail.parent}<a href="#/p/{pid}/a/{detail.parent.id}">{detail.parent.name}</a>{:else}its app{/if}.
+          It is removed when the pull request closes.
+        </small>
+      </section>
+    {/if}
+
     {#if tab === 'overview'}
       <section class="card">
         <h3>{isDb ? 'Database' : 'Source'}</h3>
@@ -344,7 +362,13 @@
         {#if canDeploy}<small class="faint">Point the domain's DNS (A record) at this server. Certificates are issued automatically.</small>{/if}
       </section>
 
-      {#if ui.advanced && detail.webhookPath}
+      {#if detail.app.source === 'git' && !isPreview}
+        {#key aid}
+          <GitCard {detail} {aid} {pid} {canDeploy} onchange={() => refresh(false)} onrotate={rotateWebhook} />
+        {/key}
+      {/if}
+
+      {#if ui.advanced && detail.webhookPath && detail.app.source !== 'git'}
         <section class="card">
           <h3>Deploy webhook</h3>
           <p class="muted">POST to this URL (for example from a GitHub webhook) to redeploy. Keep it secret.</p>
@@ -357,6 +381,10 @@
         </section>
       {/if}
       {/if}
+    {:else if tab === 'cron' && !isPreview}
+      {#key aid}
+        <CronJobs {aid} {canDeploy} appName={detail.app.name} {isDb} />
+      {/key}
     {:else if tab === 'metrics'}
       <Metrics path="/apps/{aid}/metrics" />
     {:else if tab === 'backups' && detail.backupKind}
@@ -382,7 +410,7 @@
             <li>
               <button class="dep" onclick={() => showDeployment(d.id)}>
                 <span class="dot {d.status}"></span>
-                <span class="grow">#{d.id} · {d.status}</span>
+                <span class="grow">#{d.id} · {d.status}{#if d.commitSha} <code class="sha">{d.commitSha.slice(0, 7)}</code> <span class="faint msg">{d.commitMsg}</span>{/if}</span>
                 <span class="faint">{d.trigger}</span>
                 <span class="faint">{timeAgo(d.createdAt)}</span>
               </button>
@@ -390,6 +418,18 @@
           {/each}
         </ul>
       </section>
+    {:else if tab === 'settings' && form && isPreview}
+      <section class="card">
+        <h3>Settings</h3>
+        <p class="muted">Previews use the settings of {detail.parent?.name || 'the app they preview'}. Change them there; the next push to the pull request picks them up.</p>
+      </section>
+      {#if canDeploy}
+      <section class="card danger-zone">
+        <h3>Remove preview</h3>
+        <p class="muted">Stops the preview and deletes its volumes. A new push to the pull request creates it again.</p>
+        <div><button class="btn danger" disabled={!!busy} onclick={removeApp}>Remove preview</button></div>
+      </section>
+      {/if}
     {:else if tab === 'settings' && form}
       <form class="card" onsubmit={saveSettings}>
         <h3>App settings</h3>
@@ -603,6 +643,21 @@
   }
   .danger-zone {
     border-color: var(--sp-danger);
+  }
+  .preview-banner {
+    border-color: var(--sp-accent);
+  }
+  .preview-banner span {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+    flex-wrap: wrap;
+  }
+  .sha {
+    font-size: var(--sp-text-xs);
+  }
+  .msg {
+    font-size: var(--sp-text-xs);
   }
   :global(.btn.icon.active) {
     background: var(--sp-bg-active);

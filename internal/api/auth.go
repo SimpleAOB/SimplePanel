@@ -39,17 +39,75 @@ func (s *Server) setSession(w http.ResponseWriter, r *http.Request, userID int64
 	return nil
 }
 
+// hasBearer reports whether the request carries an API token.
+func hasBearer(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// sessionOnly lists requests API tokens may not make: signing out, and
+// managing users, tokens, Git connections and secrets, which could hand
+// out more access than the token has.
+var sessionOnly = map[string]bool{
+	"POST /api/logout":                        true,
+	"POST /api/me/password":                   true,
+	"POST /api/tokens":                        true,
+	"DELETE /api/tokens/{id}":                 true,
+	"POST /api/users":                         true,
+	"PUT /api/users/{id}":                     true,
+	"DELETE /api/users/{id}":                  true,
+	"POST /api/users/{id}/reset":              true,
+	"POST /api/backups/destinations/{id}/key": true,
+	"POST /api/git/github/manifest":           true,
+	"POST /api/git/gitlab":                    true,
+	"PUT /api/git/providers/{id}":             true,
+	"DELETE /api/git/providers/{id}":          true,
+}
+
+// tokenUser authenticates an API token for the REST API. Tokens made for
+// AI assistants (without API access) only work on /mcp.
+func (s *Server) tokenUser(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
+	ip := clientIP(r)
+	if s.mcpAuthLimit.Blocked(ip) {
+		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+		return nil, false
+	}
+	tok, u, err := s.mcpToken(r)
+	if err != nil {
+		s.mcpAuthLimit.Allow(ip)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="SimplePanel"`)
+		writeErr(w, 401, "invalid API token")
+		return nil, false
+	}
+	if !tok.API {
+		writeErr(w, 403, "this token is for AI assistants (MCP) only; create a token with API access in Settings → API & CLI")
+		return nil, false
+	}
+	if sessionOnly[r.Pattern] {
+		writeErr(w, 403, "API tokens can't do this; sign in to SimplePanel instead")
+		return nil, false
+	}
+	return u, true
+}
+
 func (s *Server) requireAuth(h func(http.ResponseWriter, *http.Request, *store.User)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err != nil || c.Value == "" {
-			writeErr(w, 401, "not signed in")
-			return
-		}
-		u, err := s.store.SessionUser(r.Context(), c.Value)
-		if err != nil {
-			writeErr(w, 401, "not signed in")
-			return
+		var u *store.User
+		if hasBearer(r) {
+			var ok bool
+			if u, ok = s.tokenUser(w, r); !ok {
+				return
+			}
+		} else {
+			c, err := r.Cookie(sessionCookie)
+			if err != nil || c.Value == "" {
+				writeErr(w, 401, "not signed in")
+				return
+			}
+			u, err = s.store.SessionUser(r.Context(), c.Value)
+			if err != nil {
+				writeErr(w, 401, "not signed in")
+				return
+			}
 		}
 		if _, logged := activityActions[r.Pattern]; !logged {
 			h(w, r, u)
@@ -151,6 +209,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, _ *store.User) {
+	// Logged out sessions only; API tokens are refused before getting here.
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteSession(r.Context(), c.Value)
 	}
