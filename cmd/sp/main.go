@@ -45,7 +45,10 @@ Usage: sp <command> [arguments]
                                   deploy; --wait follows the build log and
                                   exits non-zero if the deploy fails
   deployments SERVICE             list recent deployments
-  logs SERVICE [--tail N] [-f]    show (or follow) container logs
+  logs SERVICE [--tail N] [-f] [--since 1h] [--launch N]
+                                  show (or follow) container logs; --launch
+                                  shows one container start, even a past one
+  launches SERVICE                list recent container starts (launches)
   restart | stop | start SERVICE
 
   env list SERVICE                list environment variables
@@ -540,27 +543,85 @@ func run(args []string) error {
 		}
 		return tw.Flush()
 
-	case "logs":
-		tail := fs.Int("tail", 200, "")
-		follow := fs.Bool("f", false, "")
-		fs.BoolVar(follow, "follow", false, "")
+	case "launches":
 		pos, err := flags(fs, args)
 		if err != nil {
 			return err
 		}
-		if err := need(pos, 1, "logs SERVICE [--tail N] [-f]"); err != nil {
+		if err := need(pos, 1, "launches SERVICE"); err != nil {
 			return err
 		}
 		d, err := c.service(pos[0])
 		if err != nil {
 			return err
 		}
+		var raw struct {
+			Runs json.RawMessage `json:"runs"`
+		}
+		if err := c.do("GET", fmt.Sprintf("/apps/%d/runs", d.App.ID), nil, &raw); err != nil {
+			return err
+		}
+		if *asJSON {
+			printJSON(raw.Runs)
+			return nil
+		}
+		var runs []struct {
+			Number       int64  `json:"number"`
+			State        string `json:"state"`
+			ExitCode     *int   `json:"exitCode"`
+			Message      string `json:"message"`
+			DeploymentID *int64 `json:"deploymentId"`
+			StartedAt    int64  `json:"startedAt"`
+			EndedAt      *int64 `json:"endedAt"`
+		}
+		_ = json.Unmarshal(raw.Runs, &runs)
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "LAUNCH\tSTATE\tEXIT\tDEPLOY\tSTARTED\tENDED\tMESSAGE")
+		for _, x := range runs {
+			exit, dep, ended := "", "", ""
+			if x.ExitCode != nil {
+				exit = strconv.Itoa(*x.ExitCode)
+			}
+			if x.DeploymentID != nil {
+				dep = fmt.Sprintf("#%d", *x.DeploymentID)
+			}
+			if x.EndedAt != nil {
+				ended = ago(*x.EndedAt)
+			}
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", x.Number, x.State, exit, dep, ago(x.StartedAt), ended, x.Message)
+		}
+		return tw.Flush()
+
+	case "logs":
+		tail := fs.Int("tail", 200, "")
+		follow := fs.Bool("f", false, "")
+		fs.BoolVar(follow, "follow", false, "")
+		sinceFlag := fs.Duration("since", 0, "")
+		launch := fs.Int("launch", 0, "")
+		pos, err := flags(fs, args)
+		if err != nil {
+			return err
+		}
+		if err := need(pos, 1, "logs SERVICE [--tail N] [-f] [--since 1h] [--launch N]"); err != nil {
+			return err
+		}
+		d, err := c.service(pos[0])
+		if err != nil {
+			return err
+		}
+		query := fmt.Sprintf("/apps/%d/logs?tail=%d", d.App.ID, *tail)
+		if *sinceFlag > 0 {
+			query += fmt.Sprintf("&since=%d", time.Now().Add(-*sinceFlag).Unix())
+		}
+		if *launch > 0 {
+			query += fmt.Sprintf("&run=%d", *launch)
+		}
 		last := ""
 		for {
 			var out struct {
 				Logs string `json:"logs"`
 			}
-			if err := c.do("GET", fmt.Sprintf("/apps/%d/logs?tail=%d", d.App.ID, *tail), nil, &out); err != nil {
+			if err := c.do("GET", query, nil, &out); err != nil {
 				return err
 			}
 			lines := strings.Split(strings.TrimRight(out.Logs, "\n"), "\n")

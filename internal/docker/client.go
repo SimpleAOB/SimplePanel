@@ -461,6 +461,8 @@ func (c *Client) ServiceRemove(ctx context.Context, id string) error {
 // Task is the subset of a Swarm task we show in the UI.
 type Task struct {
 	ID           string
+	CreatedAt    time.Time
+	Slot         int
 	DesiredState string
 	Status       struct {
 		Timestamp       time.Time
@@ -469,6 +471,7 @@ type Task struct {
 		Err             string
 		ContainerStatus struct {
 			ContainerID string
+			ExitCode    int
 		}
 	}
 	Spec struct {
@@ -486,22 +489,36 @@ func (c *Client) ServiceTasks(ctx context.Context, service string) ([]Task, erro
 // ServiceLogs returns the last `tail` lines of a service's logs, demultiplexed.
 // A non-zero since (Unix seconds) only returns lines logged after it.
 func (c *Client) ServiceLogs(ctx context.Context, service string, tail int, since int64) (string, error) {
+	return c.logs(ctx, "/services/"+url.PathEscape(service)+"/logs", tail, since, 8<<20)
+}
+
+// TaskLogs returns the logs of one Swarm task (one container start). A tail
+// of 0 or less returns every line Docker still has, up to limit bytes.
+func (c *Client) TaskLogs(ctx context.Context, taskID string, tail int, since int64, limit int64) (string, error) {
+	return c.logs(ctx, "/tasks/"+url.PathEscape(taskID)+"/logs", tail, since, limit)
+}
+
+func (c *Client) logs(ctx context.Context, path string, tail int, since int64, limit int64) (string, error) {
+	t := "all"
+	if tail > 0 {
+		t = strconv.Itoa(tail)
+	}
 	q := url.Values{
 		"stdout":     {"1"},
 		"stderr":     {"1"},
 		"timestamps": {"1"},
-		"tail":       {strconv.Itoa(tail)},
+		"tail":       {t},
 	}
 	if since > 0 {
 		q.Set("since", strconv.FormatInt(since, 10))
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/services/"+url.PathEscape(service)+"/logs", q, nil, nil)
+	resp, err := c.do(ctx, http.MethodGet, path, q, nil, nil)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	var buf bytes.Buffer
-	err = demux(io.LimitReader(resp.Body, 8<<20), &buf)
+	err = demux(io.LimitReader(resp.Body, limit), &buf)
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}

@@ -306,6 +306,27 @@ var migrations = []string{
 	CREATE INDEX cron_runs_job ON cron_runs(job_id, id DESC);
 
 	ALTER TABLE api_tokens ADD COLUMN api_access INTEGER NOT NULL DEFAULT 0;`,
+	// v7: per-launch logs. One row per Swarm task (container start), with
+	// its logs copied in once it stops so they outlive Docker's task history.
+	`CREATE TABLE app_runs (
+		id INTEGER PRIMARY KEY,
+		app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		task_id TEXT NOT NULL UNIQUE,
+		number INTEGER NOT NULL,
+		slot INTEGER NOT NULL DEFAULT 0,
+		deployment_id INTEGER REFERENCES deployments(id) ON DELETE SET NULL,
+		image TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		message TEXT NOT NULL DEFAULT '',
+		exit_code INTEGER,
+		log TEXT NOT NULL DEFAULT '',
+		log_bytes INTEGER NOT NULL DEFAULT 0,
+		truncated INTEGER NOT NULL DEFAULT 0,
+		archived INTEGER NOT NULL DEFAULT 0,
+		started_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE UNIQUE INDEX app_runs_number ON app_runs(app_id, number);`,
 }
 
 func (s *Store) migrate() error {

@@ -21,6 +21,7 @@ export const ui = $state({
   advanced: load('sp-advanced', '0') === '1',
   // On narrow screens the panel overlays everything, so start closed there.
   panelOpen: load('sp-panel', '1') === '1' && window.innerWidth > 1100,
+  panelWidth: Number(load('sp-panel-width', '0')) || 0, // 0: the theme's default
   navOpen: false,
   route: parseHash(),
 });
@@ -50,6 +51,31 @@ export function setAdvanced(v) {
 export function setPanelOpen(v) {
   ui.panelOpen = v;
   save('sp-panel', v ? '1' : '0');
+}
+
+// The detail panel can be dragged wider. Keep room for the main column.
+export const PANEL_MIN = 320;
+export function panelMax() {
+  return Math.max(PANEL_MIN, window.innerWidth - 560);
+}
+export function setPanelWidth(w) {
+  ui.panelWidth = w ? Math.round(Math.min(Math.max(w, PANEL_MIN), panelMax())) : 0;
+  save('sp-panel-width', String(ui.panelWidth));
+}
+
+// Log viewer preferences, remembered per browser.
+function loadJSON(key, fallback) {
+  try {
+    return { ...fallback, ...JSON.parse(load(key, '{}')) };
+  } catch {
+    return fallback;
+  }
+}
+export const logPrefs = $state(
+  loadJSON('sp-log-prefs', { wrap: true, timestamps: true, tail: 500, level: 'all', since: 0, regex: false, caseSensitive: false }),
+);
+export function saveLogPrefs() {
+  save('sp-log-prefs', JSON.stringify(logPrefs));
 }
 
 // ---- Routing (hash based) ----
@@ -132,11 +158,18 @@ export function timeAgo(unix) {
 }
 
 // Right-hand detail panel: app logs or a deployment's build log.
-export const panel = $state({ tab: 'logs', deploymentId: 0 });
+export const panel = $state({ tab: 'logs', deploymentId: 0, run: 0, appId: 0 });
 
 export function showDeployment(id) {
   panel.tab = 'deploy';
   panel.deploymentId = id;
+  setPanelOpen(true);
+}
+
+// Opens the logs of one launch (container start); 0 means all live ones.
+export function showRun(number) {
+  panel.tab = 'logs';
+  panel.run = number;
   setPanelOpen(true);
 }
 

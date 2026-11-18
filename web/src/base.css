@@ -207,3 +207,14 @@ textarea:focus {
 .dot.running, .dot.succeeded { background: var(--sp-success); }
 .dot.starting, .dot.running-deploy, .dot.queued { background: var(--sp-warning); }
 .dot.failing, .dot.failed { background: var(--sp-danger); }
+
+/* A button that reads as an inline link. */
+.linkish {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--sp-accent);
+  font: inherit;
+  cursor: pointer;
+}
+.linkish:hover { text-decoration: underline; }
