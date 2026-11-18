@@ -12,27 +12,54 @@ import (
 
 // Engine describes a one-click database.
 type Engine struct {
-	Key      string `json:"key"`
-	Label    string `json:"label"`
-	Image    string `json:"image"`
-	Port     int    `json:"port"`
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Image string `json:"image"`
+	Port  int    `json:"port"`
+	// CustomUser is true if the user can choose the username.
+	CustomUser bool `json:"customUser"`
+	// AIAccess is true if the engine supports AI read-only access (SQL
+	// databases only).
+	AIAccess bool   `json:"aiAccess"`
 	DataPath string `json:"-"`
 	Scheme   string `json:"-"`
-	userVar  string
-	passVar  string
-	dbVar    string
-	rootVar  string
+	// Command is the default command for new databases of this engine,
+	// for engines whose image can't be configured with environment
+	// variables alone. It must not contain secrets: it is shown in
+	// Settings and exported.
+	Command string `json:"-"`
+	userVar string
+	passVar string
+	dbVar   string
+	rootVar string
+	// fixedUser and fixedDB are shown when the engine has no user or
+	// database variable (Redis).
+	fixedUser string
+	fixedDB   string
+	urlQuery  string
 }
 
 // Engines lists the supported databases. Images are official Docker Hub
 // images pinned to a major version; users can change the tag in Settings.
 var Engines = []Engine{
 	{Key: "postgres", Label: "PostgreSQL", Image: "postgres:17-alpine", Port: 5432, DataPath: "/var/lib/postgresql/data",
-		Scheme: "postgres", userVar: "POSTGRES_USER", passVar: "POSTGRES_PASSWORD", dbVar: "POSTGRES_DB"},
+		Scheme: "postgres", CustomUser: true, AIAccess: true, userVar: "POSTGRES_USER", passVar: "POSTGRES_PASSWORD", dbVar: "POSTGRES_DB"},
 	{Key: "mysql", Label: "MySQL", Image: "mysql:8.4", Port: 3306, DataPath: "/var/lib/mysql",
-		Scheme: "mysql", userVar: "MYSQL_USER", passVar: "MYSQL_PASSWORD", dbVar: "MYSQL_DATABASE", rootVar: "MYSQL_ROOT_PASSWORD"},
+		Scheme: "mysql", CustomUser: true, AIAccess: true, userVar: "MYSQL_USER", passVar: "MYSQL_PASSWORD", dbVar: "MYSQL_DATABASE", rootVar: "MYSQL_ROOT_PASSWORD"},
 	{Key: "mariadb", Label: "MariaDB", Image: "mariadb:11.4", Port: 3306, DataPath: "/var/lib/mysql",
-		Scheme: "mysql", userVar: "MARIADB_USER", passVar: "MARIADB_PASSWORD", dbVar: "MARIADB_DATABASE", rootVar: "MARIADB_ROOT_PASSWORD"},
+		Scheme: "mysql", CustomUser: true, AIAccess: true, userVar: "MARIADB_USER", passVar: "MARIADB_PASSWORD", dbVar: "MARIADB_DATABASE", rootVar: "MARIADB_ROOT_PASSWORD"},
+	// The official image creates this user as MongoDB's administrator, in
+	// the admin database; MONGO_INITDB_DATABASE only names the default
+	// database in the connection URL.
+	{Key: "mongo", Label: "MongoDB", Image: "mongo:8.0", Port: 27017, DataPath: "/data/db",
+		Scheme: "mongodb", CustomUser: true, userVar: "MONGO_INITDB_ROOT_USERNAME", passVar: "MONGO_INITDB_ROOT_PASSWORD",
+		dbVar: "MONGO_INITDB_DATABASE", urlQuery: "authSource=admin"},
+	// The Redis image has no password variable, so the command passes it
+	// from REDIS_PASSWORD. Append-only persistence keeps every write
+	// (fsync once a second) instead of periodic snapshots only.
+	{Key: "redis", Label: "Redis", Image: "redis:8-alpine", Port: 6379, DataPath: "/data",
+		Scheme: "redis", passVar: "REDIS_PASSWORD", fixedUser: "default", fixedDB: "0",
+		Command: `sh -c 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"'`},
 }
 
 // EngineByKey returns the engine or nil.
@@ -57,6 +84,9 @@ var dbUserRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,31}$`)
 // Validate checks user-chosen credentials for engine e.
 func (c DBCredentials) Validate(e *Engine) error {
 	if c.User != "" {
+		if !e.CustomUser {
+			return errors.New("username: " + e.Label + " has no username to choose; it only uses a password")
+		}
 		if !dbUserRe.MatchString(c.User) {
 			return errors.New("username: use up to 32 lowercase letters, numbers and underscores, starting with a letter or underscore")
 		}
@@ -92,17 +122,20 @@ func NewDatabaseApp(e *Engine, projectID int64, projectName, name string, cred D
 	if pass == "" {
 		pass = randomHex(16)
 	}
-	env := []string{
-		e.userVar + "=" + user,
-		e.passVar + "=" + pass,
-		e.dbVar + "=" + ident,
+	var env []string
+	if e.userVar != "" {
+		env = append(env, e.userVar+"="+user)
+	}
+	env = append(env, e.passVar+"="+pass)
+	if e.dbVar != "" {
+		env = append(env, e.dbVar+"="+ident)
 	}
 	if e.rootVar != "" {
 		env = append(env, e.rootVar+"="+randomHex(16))
 	}
 	return &store.App{
 		ProjectID: projectID, ProjectName: projectName, Name: name, Kind: e.Key,
-		Source: "image", Image: e.Image, Env: strings.Join(env, "\n") + "\n", Replicas: 1,
+		Source: "image", Image: e.Image, Env: strings.Join(env, "\n") + "\n", Replicas: 1, Command: e.Command,
 		Volumes: []store.Volume{{Name: "data", Path: e.DataPath}},
 		Ports:   []store.Port{},
 	}
@@ -134,16 +167,23 @@ func DatabaseInfo(a *store.App) *DBInfo {
 	}
 	info := &DBInfo{
 		Engine: e.Key, Host: a.ServiceName(), Port: e.Port,
-		User: vars[e.userVar], Password: vars[e.passVar], Database: vars[e.dbVar],
+		User: e.fixedUser, Password: vars[e.passVar], Database: e.fixedDB,
+	}
+	if e.userVar != "" {
+		info.User = vars[e.userVar]
+	}
+	if e.dbVar != "" {
+		info.Database = vars[e.dbVar]
 	}
 	if e.rootVar != "" {
 		info.RootPassword = vars[e.rootVar]
 	}
 	u := url.URL{
-		Scheme: e.Scheme,
-		User:   url.UserPassword(info.User, info.Password),
-		Host:   fmt.Sprintf("%s:%d", info.Host, info.Port),
-		Path:   "/" + info.Database,
+		Scheme:   e.Scheme,
+		User:     url.UserPassword(info.User, info.Password),
+		Host:     fmt.Sprintf("%s:%d", info.Host, info.Port),
+		Path:     "/" + info.Database,
+		RawQuery: e.urlQuery,
 	}
 	info.URL = u.String()
 	return info
@@ -154,12 +194,27 @@ func DatabaseInfo(a *store.App) *DBInfo {
 // unreachable from other projects and from the proxy.
 func ProjectNetwork(project string) string { return "sp_" + project }
 
+// URLTemplate is the connection URL with a placeholder instead of the
+// password, for host.
+func (info *DBInfo) URLTemplate(host string) string {
+	scheme, rest, _ := strings.Cut(info.URL, "://")
+	_, query, _ := strings.Cut(rest, "?")
+	u := fmt.Sprintf("%s://%s:<password>@%s:%d/%s", scheme, info.User, host, info.Port, info.Database)
+	if query != "" {
+		u += "?" + query
+	}
+	return u
+}
+
 // IsCredentialVar reports whether an environment variable holds a
 // credential that SimplePanel generates for this engine.
 func (e *Engine) IsCredentialVar(key string) bool {
+	if key == "" {
+		return false
+	}
 	switch key {
 	case e.userVar, e.passVar, e.dbVar, e.rootVar:
-		return key != ""
+		return true
 	}
 	return false
 }

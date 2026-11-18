@@ -57,7 +57,7 @@ func (m *Manager) dbVars(app *store.App) (*Engine, map[string]string, error) {
 		vars[k] = v
 	}
 	for _, k := range []string{e.userVar, e.dbVar} {
-		if !safeIdent(vars[k]) {
+		if k != "" && !safeIdent(vars[k]) {
 			return nil, nil, fmt.Errorf("%s is missing or has unexpected characters", k)
 		}
 	}
@@ -142,6 +142,8 @@ func (m *Manager) adminExec(ctx context.Context, app *store.App, sql string) (st
 		return "", err
 	}
 	switch e.Key {
+	case "mongo", "redis":
+		return "", errNoAIAccess
 	case "postgres":
 		// Local socket connections are trusted in the official image.
 		return m.exec(ctx, app, []string{"psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA",
@@ -152,6 +154,9 @@ func (m *Manager) adminExec(ctx context.Context, app *store.App, sql string) (st
 	}
 }
 
+// errNoAIAccess is returned for engines without AI read-only access.
+var errNoAIAccess = errors.New("AI read-only access is only available for PostgreSQL, MySQL and MariaDB")
+
 // EnableAIAccess creates (or resets) the read-only user with password.
 func (m *Manager) EnableAIAccess(ctx context.Context, app *store.App, password string) error {
 	if !safeIdent(password) {
@@ -160,6 +165,9 @@ func (m *Manager) EnableAIAccess(ctx context.Context, app *store.App, password s
 	e, vars, err := m.dbVars(app)
 	if err != nil {
 		return err
+	}
+	if !e.AIAccess {
+		return errNoAIAccess
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -205,6 +213,9 @@ func (m *Manager) DisableAIAccess(ctx context.Context, app *store.App) error {
 	e, _, err := m.dbVars(app)
 	if err != nil {
 		return err
+	}
+	if !e.AIAccess {
+		return nil // never turned on
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -263,6 +274,9 @@ func (m *Manager) AIQuery(ctx context.Context, app *store.App, password, q strin
 	e, vars, err := m.dbVars(app)
 	if err != nil {
 		return nil, err
+	}
+	if !e.AIAccess {
+		return nil, errNoAIAccess
 	}
 	ctx, cancel := context.WithTimeout(ctx, aiQueryTimeout+10*time.Second)
 	defer cancel()

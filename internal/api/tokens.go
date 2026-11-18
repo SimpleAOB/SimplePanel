@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 )
 
@@ -103,6 +104,10 @@ func (s *Server) setAIAccess(w http.ResponseWriter, r *http.Request, u *store.Us
 	}
 	if !a.IsDatabase() {
 		writeErr(w, 400, "only databases have AI read-only access")
+		return
+	}
+	if e := deploy.EngineByKey(a.Kind); e == nil || !e.AIAccess {
+		writeErr(w, 400, "AI read-only access is only available for PostgreSQL, MySQL and MariaDB")
 		return
 	}
 	var body struct {

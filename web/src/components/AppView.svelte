@@ -27,6 +27,9 @@
   let reveal = $state(false);
   let copied = $state('');
   let isDb = $derived(!!detail?.database);
+  // The variable name apps usually read the connection URL from.
+  const urlVars = { mongo: 'MONGODB_URI', redis: 'REDIS_URL' };
+  let urlVar = $derived(urlVars[detail?.database?.engine] || 'DATABASE_URL');
 
   const pid = ui.route.projectId;
   const aid = ui.route.appId;
@@ -258,10 +261,11 @@
               <input type="text" readonly class="mono" value={reveal ? db.url : db.url.replace(`:${encodeURIComponent(db.password)}@`, ':••••••@')} aria-label="Connection URL" />
               <button class="btn" onclick={() => copy(db.url, 'url')}>{copied === 'url' ? 'Copied' : 'Copy'}</button>
             </div>
-            <small class="faint">Use it as DATABASE_URL in your app's Environment tab. Changing the password variables after the first start does not change the database's password.</small>
+            <small class="faint">Use it as {urlVar} in your app's Environment tab. Changing the password variables after the first start does not change the database's password.</small>
           </div>
         </section>
 
+        {#if detail.aiAccessSupported !== false}
         <section class="card">
           <div class="row between">
             <h3>AI read-only access</h3>
@@ -279,6 +283,7 @@
             </button>
           </div>
         </section>
+        {/if}
       {:else}
       <section class="card">
         <h3>Domains</h3>
@@ -355,7 +360,7 @@
     {:else if tab === 'metrics'}
       <Metrics path="/apps/{aid}/metrics" />
     {:else if tab === 'backups' && detail.backupKind}
-      <BackupsView appId={aid} appName={detail.app.name} isDb={isDb} level={level} />
+      <BackupsView appId={aid} appName={detail.app.name} isDb={isDb} engine={detail.database?.engine || ''} level={level} />
     {:else if tab === 'environment' && canDeploy}
       <form class="card" onsubmit={saveEnv}>
         <h3>Environment variables</h3>

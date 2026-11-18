@@ -2,8 +2,8 @@
 
 A free, self-hosted server panel. Install it on a fresh VPS with one command,
 then deploy apps from a Git repository or a Docker image, put them on your
-domains with automatic HTTPS, and create Postgres or MySQL databases in one
-click.
+domains with automatic HTTPS, and create Postgres, MySQL, MongoDB or Redis
+databases in one click.
 
 > Status: early development (v0.1).
 
@@ -44,8 +44,8 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
   listings.
 - **Deploy a Docker image** from Docker Hub, GHCR or any registry.
 - **Domains with automatic HTTPS** via Let's Encrypt.
-- **Databases**: PostgreSQL, MySQL and MariaDB with your own or generated
-  credentials, a
+- **Databases**: PostgreSQL, MySQL, MariaDB, MongoDB and Redis with your own
+  or generated credentials, a
   persistent volume and a copyable connection URL. Databases are only
   reachable from apps in the same project.
 - **Zero-downtime deploys**: new containers start before old ones stop.
@@ -62,9 +62,10 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 ## New in v0.2
 
 - **Backups to S3-compatible storage** (AWS S3, Cloudflare R2, Backblaze
-  B2, Wasabi, MinIO…). Back up PostgreSQL, MySQL and MariaDB databases, the
-  volumes of any app, and SimplePanel's own configuration, on a schedule
-  or on demand, keeping the last N. Backups are plain SQL dumps or tar
+  B2, Wasabi, MinIO…). Back up PostgreSQL, MySQL, MariaDB, MongoDB and
+  Redis databases, the volumes of any app, and SimplePanel's own
+  configuration, on a schedule or on demand, keeping the last N. Backups
+  are plain SQL dumps, `mongodump` archives, Redis snapshots (RDB) or tar
   archives, gzipped and optionally **encrypted with
   [age](https://age-encryption.org)**, so you can also open them without
   SimplePanel (`age -d backup.sql.gz.age | gunzip`).
@@ -174,3 +175,7 @@ The UI's colours, fonts, spacing and radii all live in
 matching light theme.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it fits together.
+
+## License
+
+SimplePanel is free software under the [MIT License](LICENSE).

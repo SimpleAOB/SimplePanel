@@ -9,7 +9,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
 
-  let { panel = false, appId = 0, appName = '', isDb = false, level = 3 } = $props();
+  let { panel = false, appId = 0, appName = '', isDb = false, engine = '', level = 3 } = $props();
 
   let base = $derived(panel ? '/backups/panel' : `/apps/${appId}/backups`);
   let canRun = $derived(panel || level >= 2);
@@ -163,6 +163,14 @@
       : `/api/apps/${appId}/backups/file?destination=${r.destinationId}&key=${encodeURIComponent(r.key)}`;
   }
 
+  // What "Replace data" does, per engine.
+  let replaceHint = $derived(
+    engine === 'redis'
+      ? `${appName} restarts with exactly the data in the backup. Keys written since the backup are lost.`
+      : engine === 'mongo'
+        ? `Collections in the backup replace the ones in ${appName}. Users and passwords don't change.`
+        : `Tables in the backup replace the ones in ${appName}. Apps using it see the old data right away.`,
+  );
   let what = $derived(panel ? 'SimplePanel’s configuration' : isDb ? 'this database' : 'this app’s volumes');
 </script>
 
@@ -396,7 +404,7 @@
               <input type="radio" value="replace" bind:group={restoring.mode} disabled={!canManage} />
               <strong>Replace {appName}'s data</strong>
               <small class="muted">
-                {canManage ? `Tables in the backup replace the ones in ${appName}. Apps using it see the old data right away.` : 'Needs manage access to this project.'}
+                {canManage ? replaceHint : 'Needs manage access to this project.'}
               </small>
             </label>
           </div>
@@ -409,7 +417,9 @@
         {:else}
           <p class="warn">
             {isDb
-              ? `This replaces the current data in ${appName}.`
+              ? engine === 'redis'
+                ? `This stops ${appName}, replaces all of its data with the backup, and starts it again.`
+                : `This replaces the current data in ${appName}.`
               : `This stops ${appName}, replaces everything in its volumes with the backup, and starts it again.`}
             It can't be undone, so consider backing up first.
           </p>

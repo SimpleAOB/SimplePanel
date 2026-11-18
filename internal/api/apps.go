@@ -536,12 +536,14 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if a.IsDatabase() {
 		info := deploy.DatabaseInfo(a)
 		if lvl < store.LevelDeploy && info != nil {
-			scheme, _, _ := strings.Cut(info.URL, "://")
+			info.URL = info.URLTemplate(info.Host)
 			info.Password, info.RootPassword = "", ""
-			info.URL = fmt.Sprintf("%s://%s:<password>@%s:%d/%s", scheme, info.User, info.Host, info.Port, info.Database)
 		}
 		out["database"] = info
 		out["aiAccess"], _, _ = s.store.AIAccess(r.Context(), a.ID)
+		if e := deploy.EngineByKey(a.Kind); e != nil {
+			out["aiAccessSupported"] = e.AIAccess
+		}
 	}
 	if lvl < store.LevelDeploy {
 		redactApp(a)
