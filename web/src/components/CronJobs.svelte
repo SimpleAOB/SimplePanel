@@ -6,6 +6,8 @@
   import { ui, timeAgo } from '../lib/state.svelte.js';
   import { describeSchedule, schedulePresets } from '../lib/cron.js';
   import Icon from './Icon.svelte';
+  import LogView from './LogView.svelte';
+  import { saveText } from '../lib/logs.js';
 
   let { aid, canDeploy, appName, isDb = false } = $props();
 
@@ -242,7 +244,23 @@
             </li>
           {/each}
         </ul>
-        <pre class="output">{run ? run.output || (run.status === 'running' ? 'Waiting for output…' : '(no output)') : 'Pick a run to see its output.'}</pre>
+        <div class="output">
+          <LogView
+            compact
+            text={run?.output || ''}
+            empty={run ? (run.status === 'running' ? 'Waiting for output…' : '(no output)') : 'Pick a run to see its output.'}
+          />
+          {#if run?.output}
+            <button
+              class="btn ghost icon save"
+              title="Download output"
+              aria-label="Download output"
+              onclick={() => saveText(`${appName}-cron-${jobs.find((j) => j.id === selected)?.name || 'job'}-run-${run.id}.log`, run.output)}
+            >
+              <Icon name="download" size={14} />
+            </button>
+          {/if}
+        </div>
       </div>
     {/if}
   </section>
@@ -398,18 +416,18 @@
     background: var(--sp-bg-hover);
   }
   .output {
-    margin: 0;
+    position: relative;
+    display: flex;
     min-height: 120px;
     max-height: 320px;
-    overflow: auto;
-    padding: var(--sp-space-3);
-    border-radius: var(--sp-radius-md);
-    background: var(--sp-bg-main);
-    border: 1px solid var(--sp-border);
-    font-family: var(--sp-font-mono);
-    font-size: var(--sp-text-xs);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+  }
+  .save {
+    position: absolute;
+    top: var(--sp-space-1);
+    right: var(--sp-space-3);
+    width: 28px;
+    height: 28px;
+    background: var(--sp-bg-elevated);
   }
   @media (max-width: 640px) {
     .runs {

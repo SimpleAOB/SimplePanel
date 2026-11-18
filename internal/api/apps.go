@@ -705,27 +705,93 @@ func (s *Server) startApp(w http.ResponseWriter, r *http.Request, u *store.User)
 	}
 }
 
+// appLogs returns a service's logs: every container's, or one launch's with
+// ?run=N. ?since= (Unix seconds) and ?tail= narrow them, and ?download=1
+// sends them as a .log file.
 func (s *Server) appLogs(w http.ResponseWriter, r *http.Request, u *store.User) {
 	a, ok := s.loadApp(w, r, u, store.LevelView)
 	if !ok {
 		return
 	}
-	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
-	if tail <= 0 || tail > 5000 {
+	q := r.URL.Query()
+	download := q.Get("download") == "1"
+	maxTail := 5000
+	if download {
+		maxTail = 100000
+	}
+	tail, _ := strconv.Atoi(q.Get("tail"))
+	if tail < 0 || tail > maxTail || (tail == 0 && !download) {
 		tail = 300
+	}
+	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
+	if since < 0 {
+		since = 0
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	logs, err := s.deploy.Logs(ctx, a, tail, 0)
-	if errors.Is(err, docker.ErrNotFound) {
-		writeJSON(w, 200, map[string]string{"logs": ""})
-		return
+	var (
+		logs string
+		err  error
+		run  *store.AppRun
+	)
+	if v := q.Get("run"); v != "" {
+		n, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil || n <= 0 {
+			writeErr(w, 400, "bad run")
+			return
+		}
+		if run, err = s.store.AppRun(ctx, a.ID, n); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		logs, err = s.deploy.RunLogs(ctx, run, tail, since)
+	} else {
+		if download && tail == 0 {
+			tail = maxTail
+		}
+		logs, err = s.deploy.Logs(ctx, a, tail, since)
+		if errors.Is(err, docker.ErrNotFound) {
+			logs, err = "", nil
+		}
 	}
 	if err != nil && logs == "" {
 		writeErr(w, 502, err.Error())
 		return
 	}
+	if download {
+		name := a.ProjectName + "-" + a.Name
+		if run != nil {
+			name += fmt.Sprintf("-launch-%d", run.Number)
+		}
+		name += "-" + time.Now().UTC().Format("20060102-150405") + ".log"
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		_, _ = w.Write([]byte(logs))
+		return
+	}
 	writeJSON(w, 200, map[string]string{"logs": logs})
+}
+
+// appRuns lists a service's launches (container starts), newest first.
+func (s *Server) appRuns(w http.ResponseWriter, r *http.Request, u *store.User) {
+	a, ok := s.loadApp(w, r, u, store.LevelView)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	syncErr := s.deploy.SyncRuns(ctx, a)
+	runs, err := s.store.AppRuns(ctx, a.ID, deploy.RunsKept)
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	out := map[string]any{"runs": runs, "kept": deploy.RunsKept}
+	if syncErr != nil {
+		// Docker unreachable: still show what was recorded.
+		out["warning"] = "Couldn't reach Docker, so this list may be out of date."
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) listDeployments(w http.ResponseWriter, r *http.Request, u *store.User) {

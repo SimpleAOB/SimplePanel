@@ -169,6 +169,7 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/apps/{id}/stop", s.stopApp)
 	a("POST /api/apps/{id}/start", s.startApp)
 	a("GET /api/apps/{id}/logs", s.appLogs)
+	a("GET /api/apps/{id}/runs", s.appRuns)
 	a("GET /api/apps/{id}/deployments", s.listDeployments)
 	a("POST /api/apps/{id}/domains", s.createDomain)
 	a("POST /api/apps/{id}/webhook/rotate", s.rotateWebhook)

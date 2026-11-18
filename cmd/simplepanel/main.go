@@ -149,6 +149,7 @@ func run(log *slog.Logger) error {
 	}
 
 	crons.Start(ctx)
+	dm.StartRunArchiver(ctx)
 	srv.Use(backups, mon, notifier)
 	srv.StartJanitor(ctx)
 

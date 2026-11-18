@@ -39,7 +39,8 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Deploy | `POST /api/apps/{id}/deploy` (returns the deployment) |
 | Deployment status and build log | `GET /api/deployments/{id}` |
 | Deployment history | `GET /api/apps/{id}/deployments` |
-| Logs | `GET /api/apps/{id}/logs?tail=300` |
+| Logs | `GET /api/apps/{id}/logs?tail=300&since=UNIX&run=N` (add `download=1` for a `.log` file) |
+| Launches (each container start) | `GET /api/apps/{id}/runs` |
 | Restart, stop, start | `POST /api/apps/{id}/restart` (`/stop`, `/start`) |
 | Pull request previews | `GET /api/apps/{id}/previews` |
 | Cron jobs | `GET /api/apps/{id}/cron`, `POST /api/apps/{id}/cron {"name","schedule","command","timeout"}` |
@@ -74,6 +75,8 @@ sp services                              # every service and its status
 sp deploy shop/web --wait                # exits non-zero if the deploy fails
 sp deploy shop/api --tag 1.4.2 --wait    # image apps: deploy another tag
 sp logs shop/web -f
+sp launches shop/web                     # past container starts
+sp logs shop/web --launch 12 --since 1h   # one launch's output
 sp env set shop/web LOG_LEVEL=debug --deploy
 sp cron run shop/worker "Nightly report" --wait
 sp previews shop/web

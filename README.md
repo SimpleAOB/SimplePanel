@@ -52,7 +52,7 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 - **Deploy webhooks** for CI/CD (see below).
 - **Export and import as JSON**: copy or download a whole project or a
   single service, then paste it into any SimplePanel to recreate it.
-- **Logs**: live app logs and build logs side by side.
+- **Logs**: live app logs and build logs in a resizable side panel, with search, error and warning highlighting, and downloads. Every container start (a deploy, a restart, a crash) keeps its own logs, so you can read what a previous run printed after it's gone.
 - **Connect an AI (MCP)**: a built-in MCP server lets assistants such as
   Claude Code check on apps, read logs, change settings and deploy (see
   below).

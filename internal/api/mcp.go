@@ -838,11 +838,14 @@ func init() {
 		},
 		{
 			name: "get_logs", title: "Get service logs", scope: store.ScopeRead, readOnly: true,
-			description: "Returns a service's recent container output (stdout and stderr), oldest first, with timestamps.",
+			description: "Returns a service's recent container output (stdout and stderr), oldest first, with timestamps. " +
+				"Pass launch to read one container start's output, including a previous one that crashed or was replaced; " +
+				"list_launches lists them.",
 			props: map[string]any{
 				"service": pService,
 				"tail":    prop("integer", "Number of lines from the end, 1-1000. Default 200."),
 				"since":   prop("string", `Only lines after this: a duration like "15m", "2h", "1d", or an RFC 3339 time.`),
+				"launch":  prop("integer", "Launch number from list_launches. Default: all running containers."),
 			},
 			required: []string{"service"},
 			run: func(c *mcpCall) (any, error) {
@@ -850,6 +853,7 @@ func init() {
 					Service string `json:"service"`
 					Tail    int    `json:"tail"`
 					Since   string `json:"since"`
+					Launch  int64  `json:"launch"`
 				}
 				if err := c.bind(&a); err != nil {
 					return nil, err
@@ -868,7 +872,22 @@ func init() {
 				}
 				ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 				defer cancel()
-				logs, err := c.s.deploy.Logs(ctx, app, a.Tail, since)
+				var logs string
+				if a.Launch > 0 {
+					run, err := c.s.store.AppRun(ctx, app.ID, a.Launch)
+					if err != nil {
+						return nil, fmt.Errorf("launch %d not found: call list_launches", a.Launch)
+					}
+					logs, err = c.s.deploy.RunLogs(ctx, run, a.Tail, since)
+					if err != nil && logs == "" {
+						return nil, err
+					}
+					if strings.TrimSpace(logs) == "" {
+						return "No log lines.", nil
+					}
+					return tailText(logs, a.Tail, 200<<10), nil
+				}
+				logs, err = c.s.deploy.Logs(ctx, app, a.Tail, since)
 				if err != nil && logs == "" {
 					if strings.Contains(err.Error(), "not found") {
 						return "The service isn't running yet, so there are no logs. Deploy it first.", nil
@@ -879,6 +898,29 @@ func init() {
 					return "No log lines.", nil
 				}
 				return tailText(logs, a.Tail, 200<<10), nil
+			},
+		},
+		{
+			name: "list_launches", title: "List launches", scope: store.ScopeRead, readOnly: true,
+			description: "Lists a service's recent launches (container starts), newest first: state, exit code, " +
+				"start and end time, and the deployment that created it. Read one's output with get_logs and launch.",
+			props:    map[string]any{"service": pService},
+			required: []string{"service"},
+			run: func(c *mcpCall) (any, error) {
+				var a struct {
+					Service string `json:"service"`
+				}
+				if err := c.bind(&a); err != nil {
+					return nil, err
+				}
+				app, err := c.service(a.Service)
+				if err != nil {
+					return nil, err
+				}
+				ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+				defer cancel()
+				_ = c.s.deploy.SyncRuns(ctx, app)
+				return c.s.store.AppRuns(ctx, app.ID, 30)
 			},
 		},
 		{
