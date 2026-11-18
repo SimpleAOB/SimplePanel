@@ -253,6 +253,10 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request, u *store.User
 		if !ok {
 			return
 		}
+		if a.IsPreview() {
+			writeErr(w, 400, "previews are temporary and can't be backed up")
+			return
+		}
 		if backup.KindOf(a) == "" {
 			writeErr(w, 400, "this app has no volumes, so there's nothing to back up")
 			return
@@ -387,6 +391,10 @@ func (s *Server) runBackup(w http.ResponseWriter, r *http.Request, u *store.User
 	if r.PathValue("id") != "" {
 		a, ok := s.loadApp(w, r, u, store.LevelDeploy)
 		if !ok {
+			return
+		}
+		if a.IsPreview() {
+			writeErr(w, 400, "previews are temporary and can't be backed up")
 			return
 		}
 		app = a

@@ -1,4 +1,4 @@
-# SimplePanel architecture (v0.2)
+# SimplePanel architecture (v0.3)
 
 SimplePanel is a free, self-hosted server control panel: point it at a fresh VPS,
 run one command, then deploy apps from a Git repository or a Docker image with
@@ -294,6 +294,79 @@ router per app for `<app>-<project>.<wildcard>`, pointing at the app's HTTP
 port (its own setting, else its first domain's port, else 80). Apps can
 turn it off.
 
+## v0.3 additions
+
+### Git providers (GitHub and GitLab)
+
+Connections live in the `git_providers` table. An app links to one with
+`git_provider_id` and `git_repo` (`owner/name`); its clone URL is still
+stored, so unlinking keeps it deployable.
+
+- **GitHub** uses the [app manifest flow](https://docs.github.com/apps/sharing-github-apps/registering-a-github-app-from-a-manifest):
+  the browser form-POSTs a manifest to github.com, the owner approves it, and
+  GitHub redirects back to `/api/git/github/callback` with a one-time code
+  that SimplePanel converts into the app's ID, private key, webhook secret and
+  client secret. Each install therefore owns its own GitHub App; there is no
+  central app or relay. The callback is authenticated by a one-time `state`
+  (10 minutes), because the `SameSite=Strict` session cookie isn't sent on a
+  cross-site redirect. API calls use an RS256 app JWT exchanged for
+  installation tokens, cached until shortly before they expire. Clones use
+  an installation token scoped to the repository.
+- **GitLab** (gitlab.com or self-hosted) uses an access token with `api`
+  scope. Linking an app adds a project webhook pointing at
+  `/api/hooks/gitlab/{id}` with a random `X-Gitlab-Token`.
+- **Webhooks.** `/api/hooks/github` finds the connection by checking the
+  `X-Hub-Signature-256` HMAC against each GitHub connection's secret.
+  Events are parsed into one shape (push, pull request opened, updated,
+  closed) and matched against linked apps by repository and branch.
+- **Commit status and comments.** Deploys report pending, success or
+  failure on the commit (context `SimplePanel: project/app`). Previews also
+  upsert one comment on the pull request with the preview URL.
+- **Deploy keys.** Unlinked apps can get an Ed25519 SSH key pair; the public
+  half goes into the repository as a read-only deploy key and the app uses a
+  `git@` URL. Clones run `ssh` with `StrictHostKeyChecking=accept-new` and a
+  per-app known_hosts file, seeded with the published host keys of
+  github.com, gitlab.com and bitbucket.org; other hosts are pinned on first
+  use.
+
+### Pull request previews
+
+A preview is an ordinary app row with `parent_app_id` and `pr_number`, named
+`<app>-pr-<n>`. On each pull request event the parent's settings are copied,
+`preview_env` is applied on top of its variables, and the PR's head branch is
+deployed with 1 replica, no published ports and its own volumes, reached on
+its automatic subdomain (so previews need a wildcard domain). Closing the
+pull request removes the service and its volumes. Limits and safety: at most
+10 previews per app, pull requests from forks are skipped (their code is
+never cloned), and previews never get backups, cron jobs or a deploy webhook
+of their own.
+
+### Cron jobs
+
+`internal/cron` checks every few seconds for due jobs (standard 5-field
+cron, times in the server's time zone) and runs each one with `docker exec`
+in a running task container of the service, wrapped in `timeout` when the
+image has it. Output keeps the last 64 KB, at most 4 jobs run at once, a job
+still running when it comes due again is recorded as skipped, and the last
+50 runs per job are kept. A failed run sends the `cron.failed`
+notification.
+
+### Public API and CLI
+
+The REST API that the UI uses also accepts `Authorization: Bearer` tokens.
+Tokens carry an `api_access` flag: only tokens created under API & CLI have
+it, so tokens made for AI assistants stay MCP-only and can't use the REST
+API to read secrets. A token's level is the lower of its scope and its
+user's role. Requests that could grant more access (users, tokens, Git
+connections, backup keys) are session-only. Token requests are logged in the
+activity log with source `api`. Bearer requests skip the CSRF header check,
+since browsers never attach them automatically.
+
+`cmd/sp` is a small stdlib-only CLI built for Linux, macOS and Windows on
+every release. It stores the URL and token in the user's config directory
+(mode 0600); `SP_URL` and `SP_TOKEN` override it for CI. See
+[API.md](API.md).
+
 ## Security model
 
 - **First-run setup:** the first visitor creates the admin account. Until that
@@ -309,7 +382,8 @@ turn it off.
 - **Secrets:** Git tokens are never returned by the API and are masked in
   build logs. They reach `git` through `GIT_CONFIG_*` environment variables
   scoped to the repository host, never the command line or the cloned
-  repo's config. Clones only allow the `https` protocol. Secrets are stored
+  repo's config. Clones only allow the `https` and `ssh` protocols; SSH
+  deploy keys are never returned by the API. Secrets are stored
   unencrypted in SQLite on a root-only volume; anyone with root on the host
   already controls Docker, so encryption at rest is deferred.
 - **Input validation:** project/app names are restricted to
@@ -342,7 +416,10 @@ Re-running the script upgrades SimplePanel in place.
 
 ```
 cmd/simplepanel/      main entrypoint
+cmd/sp/               the sp command-line client
 internal/api/         HTTP handlers, auth, middleware
+internal/cron/        cron job scheduler
+internal/gitprovider/ GitHub App and GitLab API clients, webhook parsing
 internal/docker/      minimal Docker Engine API client
 internal/deploy/      git clone + build + service create/update
 internal/proxy/       Traefik dynamic config writer
@@ -355,10 +432,11 @@ Dockerfile            builds the SimplePanel image
 
 ## Out of scope for now (planned)
 
-- More database engines (Redis, MongoDB)
 - Webhook signature verification (HMAC) in addition to the secret URL
 - OAuth for the MCP endpoint (tokens are pasted into the AI app for now)
 - App templates
+- Bitbucket and Gitea connections (they work today through webhook URLs and
+  deploy keys)
 - Builds without a Dockerfile (Nixpacks)
 - Multi-node clusters with a built-in registry
 - Two-factor sign-in

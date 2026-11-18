@@ -25,7 +25,10 @@
   onMount(async () => {
     try {
       providers = await api.get('/git/providers');
-      if (!value.gitProviderId && providers.length && !value.gitUrl) mode = providers[0].id;
+      if (!value.gitProviderId && providers.length && !value.gitUrl) {
+        mode = providers[0].id;
+        value.gitProviderId = mode;
+      }
       if (mode !== 'url') await loadRepos();
     } catch {
       providers = [];
