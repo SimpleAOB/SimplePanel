@@ -6,7 +6,8 @@
 
   let project = $derived(data.projects.find((p) => p.id === ui.route.projectId));
   let all = $derived(data.appsFor === ui.route.projectId ? data.apps : []);
-  let apps = $derived(all.filter((a) => !a.kind || a.kind === 'app'));
+  let apps = $derived(all.filter((a) => (!a.kind || a.kind === 'app') && !a.parentAppId));
+  let previewsOf = $derived((id) => all.filter((a) => a.parentAppId === id));
   let dbs = $derived(all.filter((a) => a.kind && a.kind !== 'app'));
   let canAdd = $derived(project && projectLevel(project.id) >= LEVEL.deploy);
   let sections = $derived(settingsSections(isAdmin()));
@@ -45,6 +46,13 @@
           <span class="name">{a.name}</span>
           <span class="kind faint"><Icon name={appIcon(a)} size={14} /></span>
         </button>
+        {#each previewsOf(a.id) as p (p.id)}
+          <button class="link preview" class:active={ui.route.appId === p.id} title={p.prTitle} onclick={() => go(`/p/${project.id}/a/${p.id}`)}>
+            <span class="dot {p.status?.state}"></span>
+            <span class="name">PR #{p.prNumber}</span>
+            <span class="kind faint"><Icon name="pr" size={14} /></span>
+          </button>
+        {/each}
       {:else}
         <p class="empty faint">No apps yet.</p>
       {/each}
@@ -124,6 +132,10 @@
     flex-direction: column;
     flex: none;
     min-height: 0;
+  }
+  .link.preview {
+    padding-left: calc(var(--sp-space-3) + var(--sp-space-5));
+    font-size: var(--sp-text-sm);
   }
   header {
     height: var(--sp-header-height);

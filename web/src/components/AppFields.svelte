@@ -5,6 +5,7 @@
   import { applyStaticPreset } from '../lib/staticpresets.js';
   import Icon from './Icon.svelte';
   import StaticSiteHelp from './StaticSiteHelp.svelte';
+  import RepoPicker from './RepoPicker.svelte';
 
   let { value = $bindable(), hasToken = false, showRuntime = true, database = false } = $props();
 
@@ -43,10 +44,7 @@
       <small>{database ? 'Change the tag to switch versions. Major upgrades may need a manual data migration.' : 'Public images from Docker Hub, GHCR or any registry.'}</small>
     </label>
   {:else}
-    <label class="field">
-      <span>Repository URL</span>
-      <input type="url" bind:value={value.gitUrl} placeholder="https://github.com/user/repo" required />
-    </label>
+    <RepoPicker bind:value />
     <div class="field">
       <div class="label-row">
         <span>Build</span>
@@ -73,6 +71,7 @@
       </small>
     </div>
     {#if ui.advanced}
+      {#if !value.gitProviderId}
       <div class="row">
         <label class="field">
           <span>Branch</span>
@@ -83,7 +82,8 @@
           <input type="password" bind:value={value.gitToken} autocomplete="off" placeholder={hasToken ? 'saved (leave blank to keep)' : 'for private repositories'} />
         </label>
       </div>
-      {#if hasToken}
+      {/if}
+      {#if hasToken && !value.gitProviderId}
         <label class="check"><input type="checkbox" bind:checked={value.clearGitToken} /> Remove saved access token</label>
       {/if}
       <div class="row">

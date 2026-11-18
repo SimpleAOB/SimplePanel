@@ -7,6 +7,8 @@ export function settingsSections(admin) {
     ['backups', 'Backups', 'archive', true],
     ['notifications', 'Notifications', 'bell', true],
     ['monitoring', 'Monitoring', 'chart', true],
+    ['git', 'Git', 'git', true],
+    ['api', 'API & CLI', 'terminal', false],
     ['ai', 'Connect an AI', 'sparkles', false],
     ['account', 'Account', 'user', false],
   ];
