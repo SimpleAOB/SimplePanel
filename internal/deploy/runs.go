@@ -16,9 +16,9 @@ import (
 // few tasks of a service, so each one is recorded as an AppRun and, once it
 // stops, its logs are copied into the database.
 const (
-	RunsKept      = 30            // launches kept per service
-	RunLogMax     = 1 << 20       // bytes of log kept per launch (the end is kept)
-	runLogLines   = 20000         // lines asked from Docker when archiving
+	RunsKept      = 30      // launches kept per service
+	RunLogMax     = 1 << 20 // bytes of log kept per launch (the end is kept)
+	runLogLines   = 20000   // lines asked from Docker when archiving
 	runSyncPeriod = 15 * time.Second
 )
 
