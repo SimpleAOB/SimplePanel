@@ -42,6 +42,8 @@ const (
 	AlertMemory      = "alert.memory"
 	AlertDisk        = "alert.disk"
 	AlertResolved    = "alert.resolved"
+	CronFailed       = "cron.failed"
+	PreviewReady     = "preview.ready"
 	Test             = "test"
 )
 
@@ -60,6 +62,8 @@ var EventTypes = []EventType{
 	{BackupFailed, "Backup failed", true},
 	{BackupSucceeded, "Backup succeeded", false},
 	{RestoreFinished, "Restore finished", true},
+	{CronFailed, "Cron job failed", true},
+	{PreviewReady, "Pull request preview ready", false},
 	{AlertCPU, "High CPU", true},
 	{AlertMemory, "High memory", true},
 	{AlertDisk, "Disk almost full", true},

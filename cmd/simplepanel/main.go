@@ -15,8 +15,10 @@ import (
 
 	"github.com/SimpleAOB/SimplePanel/internal/api"
 	"github.com/SimpleAOB/SimplePanel/internal/backup"
+	"github.com/SimpleAOB/SimplePanel/internal/cron"
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/docker"
+	"github.com/SimpleAOB/SimplePanel/internal/gitprovider"
 	"github.com/SimpleAOB/SimplePanel/internal/monitor"
 	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
@@ -80,6 +82,9 @@ func run(log *slog.Logger) error {
 	if err := st.FailStaleBackups(ctx); err != nil {
 		return err
 	}
+	if err := st.FailStaleCronRuns(ctx); err != nil {
+		return err
+	}
 	tmpDir := filepath.Join(dataDir, "tmp")
 	_ = os.RemoveAll(tmpDir) // leftovers from an interrupted backup
 
@@ -98,9 +103,30 @@ func run(log *slog.Logger) error {
 		if pd, _ := st.Setting(context.Background(), "panel_domain"); pd != "" {
 			return "https://" + pd
 		}
-		return env("SP_PUBLIC_URL", "")
+		if v := env("SP_PUBLIC_URL", ""); v != "" {
+			return v
+		}
+		v, _ := st.Setting(context.Background(), "public_url")
+		return v
 	}
+	gits := gitprovider.New()
+	crons := cron.New(st, dm, dc, notifier, log)
+	srv := api.New(st, dc, dm, web.FS(), log, version)
+	srv.UseV03(gits, crons)
+	dm.GitAuth = func(ctx context.Context, app *store.App) (string, error) {
+		p, err := st.GitProvider(ctx, app.GitProviderID)
+		if err != nil {
+			return "", nil // disconnected: fall back to the app's own token
+		}
+		return gits.CloneToken(ctx, p, app.GitRepo)
+	}
+	dm.OnCommit = srv.GitOnCommit
 	dm.OnDeploy = func(app *store.App, d *store.Deployment) {
+		srv.GitOnDeploy(app, d)
+		if ev, ok := api.PreviewEvent(app, d, srv.PreviewURL(app)); ok {
+			notifier.Send(ev)
+			return
+		}
 		ev := notify.Event{ProjectID: app.ProjectID, Project: app.ProjectName, Service: app.Name,
 			Link: fmt.Sprintf("/#/p/%d/a/%d/deployments", app.ProjectID, app.ID)}
 		if d.Status == "failed" {
@@ -122,7 +148,8 @@ func run(log *slog.Logger) error {
 		log.Warn("could not write proxy config", "err", err)
 	}
 
-	srv := api.New(st, dc, dm, web.FS(), log, version).Use(backups, mon, notifier)
+	crons.Start(ctx)
+	srv.Use(backups, mon, notifier)
 	srv.StartJanitor(ctx)
 
 	hs := &http.Server{

@@ -819,6 +819,13 @@ func init() {
 					cfg["gitUrl"], cfg["gitBranch"], cfg["privateRepo"] = app.GitURL, app.GitBranch, app.HasGitToken
 					cfg["buildType"], cfg["buildPath"], cfg["dockerfile"] = app.BuildType, app.BuildPath, app.Dockerfile
 					cfg["buildCommand"], cfg["outputDir"], cfg["buildImage"], cfg["spa"] = app.BuildCommand, app.OutputDir, app.BuildImage, app.SPA
+					if app.GitRepo != "" {
+						cfg["gitRepo"], cfg["autoDeploy"] = app.GitRepo, app.AutoDeploy
+					}
+					cfg["pullRequestPreviews"] = app.Previews
+					if app.IsPreview() {
+						cfg["previewOf"], cfg["pullRequest"] = app.ParentAppID, app.PRNumber
+					}
 				}
 				out := map[string]any{"summary": c.serviceSummary(app), "config": cfg, "domains": domains,
 					"swarmService": app.ServiceName(), "envKeys": envKeys(app.Env),
@@ -1534,4 +1541,5 @@ func init() {
 		},
 	}
 	mcpTools = append(mcpTools, v02Tools()...)
+	mcpTools = append(mcpTools, v03Tools()...)
 }

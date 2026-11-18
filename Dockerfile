@@ -20,9 +20,9 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/simplepanel ./cmd/simplepanel
 
 # ---- Runtime ----
-# Alpine provides git (for Git deploys) and CA certificates.
+# Alpine provides git (for Git deploys), ssh (for deploy keys) and CA certificates.
 FROM alpine:3.22
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache git openssh-client ca-certificates tzdata
 COPY --from=server /out/simplepanel /usr/local/bin/simplepanel
 VOLUME /data
 EXPOSE 3000

@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/SimpleAOB/SimplePanel/internal/backup"
+	"github.com/SimpleAOB/SimplePanel/internal/cron"
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
 	"github.com/SimpleAOB/SimplePanel/internal/docker"
+	"github.com/SimpleAOB/SimplePanel/internal/gitprovider"
 	"github.com/SimpleAOB/SimplePanel/internal/monitor"
 	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
@@ -43,6 +45,10 @@ type Server struct {
 	monitor *monitor.Monitor
 	notify  *notify.Notifier
 
+	git       *gitprovider.Service
+	cron      *cron.Service
+	manifests manifestStates
+
 	loginLimit   *limiter
 	hookLimit    *limiter
 	mcpAuthLimit *limiter // failed MCP token attempts per IP
@@ -54,7 +60,14 @@ func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *
 		loginLimit:   newLimiter(10, 5*time.Minute),
 		hookLimit:    newLimiter(30, time.Minute),
 		mcpAuthLimit: newLimiter(20, 10*time.Minute),
+		git:          gitprovider.New(),
 	}
+}
+
+// UseV03 attaches the 0.3 services: Git providers and cron jobs.
+func (s *Server) UseV03(g *gitprovider.Service, c *cron.Service) *Server {
+	s.git, s.cron = g, c
+	return s
 }
 
 // Use attaches the v0.2 services: backups, monitoring and notifications.
@@ -73,6 +86,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup", s.postSetup)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/hooks/deploy/{token}", s.webhookDeploy)
+	mux.HandleFunc("POST /api/hooks/github", s.githubHook)
+	mux.HandleFunc("POST /api/hooks/gitlab/{id}", s.gitlabHook)
+	mux.HandleFunc("GET /api/git/github/callback", s.githubCallback)
+	mux.HandleFunc("GET /api/git/github/setup", s.githubSetup)
 	mux.HandleFunc("GET /api/invite/{token}", s.getInvite)
 	mux.HandleFunc("POST /api/invite/{token}", s.acceptInvite)
 	mux.HandleFunc("/mcp", s.mcp) // authenticated with API tokens, see mcp.go
@@ -157,6 +174,28 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/apps/{id}/webhook/rotate", s.rotateWebhook)
 	a("PUT /api/apps/{id}/ai-access", s.setAIAccess)
 	a("DELETE /api/domains/{id}", s.deleteDomain)
+	a("GET /api/services/{project}/{name}", s.getAppByName)
+	a("PATCH /api/apps/{id}/env", s.patchEnv)
+
+	// 0.3: Git providers, previews, deploy keys, cron jobs.
+	a("GET /api/git/providers", s.listProviders)
+	a("GET /api/git/providers/{id}", s.getProvider)
+	a("PUT /api/git/providers/{id}", s.updateProvider)
+	a("DELETE /api/git/providers/{id}", s.deleteProvider)
+	a("GET /api/git/providers/{id}/repos", s.providerRepos)
+	a("GET /api/git/providers/{id}/branches", s.providerBranches)
+	a("POST /api/git/github/manifest", s.githubManifest)
+	a("POST /api/git/gitlab", s.connectGitLab)
+	a("GET /api/apps/{id}/previews", s.listPreviews)
+	a("POST /api/apps/{id}/deploy-key", s.createDeployKey)
+	a("DELETE /api/apps/{id}/deploy-key", s.deleteDeployKey)
+	a("GET /api/apps/{id}/cron", s.listCron)
+	a("POST /api/apps/{id}/cron", s.createCron)
+	a("PUT /api/cron/{id}", s.updateCron)
+	a("DELETE /api/cron/{id}", s.deleteCron)
+	a("POST /api/cron/{id}/run", s.runCron)
+	a("GET /api/cron/{id}/runs", s.listCronRuns)
+	a("GET /api/cron-runs/{id}", s.getCronRun)
 	a("GET /api/deployments/{id}", s.getDeployment)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { writeErr(w, 404, "not found") })
@@ -169,7 +208,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com; object-src 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "same-origin")
@@ -177,11 +216,17 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
-			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+			limit := int64(maxBody)
+			if strings.HasPrefix(r.URL.Path, "/api/hooks/") {
+				limit = maxHookBody
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			// CSRF: browsers can't send custom headers cross-site without a
 			// CORS preflight, which we never approve. Webhooks are exempt
-			// because they authenticate with an unguessable URL token.
-			if r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/hooks/") {
+			// because they authenticate with an unguessable URL token or a
+			// signature, and API token requests because browsers never
+			// attach an Authorization header on their own.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/hooks/") && !hasBearer(r) {
 				if r.Header.Get(csrfHeader) != "1" {
 					writeErr(w, http.StatusForbidden, "missing "+csrfHeader+" header")
 					return

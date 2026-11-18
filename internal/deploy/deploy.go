@@ -5,13 +5,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +51,10 @@ type Manager struct {
 
 	// OnDeploy, if set, is called when a deployment finishes.
 	OnDeploy func(app *store.App, d *store.Deployment)
+	// OnCommit, if set, is called once a Git build knows its commit.
+	OnCommit func(app *store.App, depID int64, sha string)
+	// GitAuth returns a clone token for apps linked to a Git provider.
+	GitAuth func(ctx context.Context, app *store.App) (string, error)
 }
 
 func NewManager(cfg Config, st *store.Store, dc *docker.Client, log *slog.Logger) *Manager {
@@ -98,13 +100,20 @@ func (l *logBuf) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func (l *logBuf) addSecret(s string) {
+	l.mu.Lock()
+	l.secrets = append(l.secrets, s)
+	l.mu.Unlock()
+}
+
 func (l *logBuf) Printf(format string, a ...any) { fmt.Fprintf(l, "==> "+format+"\n", a...) }
 
 func (l *logBuf) String() string {
 	l.mu.Lock()
 	s := l.buf.String()
+	secrets := l.secrets
 	l.mu.Unlock()
-	for _, sec := range l.secrets {
+	for _, sec := range secrets {
 		if sec != "" {
 			s = strings.ReplaceAll(s, sec, "********")
 		}
@@ -153,6 +162,9 @@ func (m *Manager) run(appID, depID int64) {
 			return err
 		}
 		lb.secrets = []string{app.GitToken}
+		if app.IsPreview() {
+			lb.Printf("Preview of pull request #%d: %s", app.PRNumber, app.PRTitle)
+		}
 		switch app.Source {
 		case "image":
 			image, err = m.pullImage(ctx, app, lb)
@@ -228,11 +240,34 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 
 	repo := filepath.Join(dir, "repo")
 	lb.Printf("Cloning %s (branch: %s)", app.GitURL, orDefault(app.GitBranch, "default"))
-	if err := gitClone(ctx, app.GitURL, app.GitBranch, app.GitToken, repo, filepath.Join(dir, "home"), lb); err != nil {
+	opts := cloneOpts{URL: app.GitURL, Branch: app.GitBranch, Token: app.GitToken, DeployKey: app.DeployKey, KnownHosts: app.SSHKnownHosts}
+	if app.GitProviderID != 0 && m.GitAuth != nil && !IsSSHURL(app.GitURL) {
+		tok, err := m.GitAuth(ctx, app)
+		if err != nil {
+			return "", fmt.Errorf("getting a clone token from the Git provider: %w", err)
+		}
+		if tok != "" {
+			opts.Token = tok
+			lb.addSecret(tok)
+		}
+	}
+	kh, err := gitClone(ctx, opts, repo, filepath.Join(dir, "home"), lb)
+	if kh != "" && kh != app.SSHKnownHosts {
+		// Remember host keys seen for the first time (trust on first use).
+		if err := m.store.SetKnownHosts(context.Background(), app.ID, kh); err != nil {
+			m.log.Warn("saving SSH known hosts", "app", app.ServiceName(), "err", err)
+		}
+	}
+	if err != nil {
 		return "", err
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", repo, "log", "-1", "--format=%h %s").Output(); err == nil {
-		lb.Printf("Commit %s", strings.TrimSpace(string(out)))
+	if out, err := exec.CommandContext(ctx, "git", "-C", repo, "log", "-1", "--format=%H%x00%s").Output(); err == nil {
+		sha, msg, _ := strings.Cut(strings.TrimSpace(string(out)), "\x00")
+		lb.Printf("Commit %.7s %s", sha, msg)
+		_ = m.store.SetDeploymentCommit(context.Background(), depID, sha, msg)
+		if m.OnCommit != nil {
+			m.OnCommit(app, depID, sha)
+		}
 	}
 
 	ctxDir := repo
@@ -298,53 +333,6 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
-}
-
-// gitClone runs git with an argument list (never a shell). The token is
-// passed via GIT_CONFIG_* environment variables so it never appears in the
-// command line or in the cloned repo's config.
-func gitClone(ctx context.Context, repoURL, branch, token, dst, home string, w io.Writer) error {
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return err
-	}
-	args := []string{"clone", "--depth", "1", "--single-branch", "--no-tags", "--recurse-submodules=no"}
-	if branch != "" {
-		args = append(args, "--branch", branch)
-	}
-	args = append(args, "--", repoURL, dst)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = []string{
-		"HOME=" + home,
-		"PATH=" + os.Getenv("PATH"),
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_ALLOW_PROTOCOL=https",
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-	}
-	// Respect outbound proxy / CA settings of the host environment.
-	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO"} {
-		if v, ok := os.LookupEnv(k); ok {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
-	}
-	if token != "" {
-		u, _ := url.Parse(repoURL)
-		user := "oauth2"
-		if u.Host == "github.com" {
-			user = "x-access-token"
-		}
-		cred := base64.StdEncoding.EncodeToString([]byte(user + ":" + token))
-		cmd.Env = append(cmd.Env,
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.https://"+u.Host+"/.extraHeader",
-			"GIT_CONFIG_VALUE_0=Authorization: Basic "+cred,
-		)
-	}
-	cmd.Stdout, cmd.Stderr = w, w
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone failed (check the URL, branch and access token): %w", err)
-	}
-	return nil
 }
 
 // tarDir streams dir as a tar archive, skipping .git. Symlinks are stored as

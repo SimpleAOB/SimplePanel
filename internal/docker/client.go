@@ -318,6 +318,15 @@ func (c *Client) NetworkRemove(ctx context.Context, name string) error {
 	return err
 }
 
+// VolumeRemove deletes a named volume; a missing volume is not an error.
+func (c *Client) VolumeRemove(ctx context.Context, name string) error {
+	err := c.doJSON(ctx, http.MethodDelete, "/volumes/"+url.PathEscape(name), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // ---- Services ----
 
 type Service struct {

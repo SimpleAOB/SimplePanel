@@ -38,13 +38,17 @@ type APIToken struct {
 	Username   string `json:"username"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastUsedAt *int64 `json:"lastUsedAt"`
+	// API tokens can also call the REST API (for scripts, CI and the CLI).
+	// Tokens made for AI assistants can only use /mcp, which never returns
+	// secrets.
+	API bool `json:"api"`
 }
 
-const tokenCols = `t.id,t.name,t.scope,COALESCE(t.user_id,0),COALESCE(u.username,''),t.created_at,t.last_used_at`
+const tokenCols = `t.id,t.name,t.scope,COALESCE(t.user_id,0),COALESCE(u.username,''),t.created_at,t.last_used_at,t.api_access`
 
 func scanToken(r scanner) (*APIToken, error) {
 	var t APIToken
-	if err := r.Scan(&t.ID, &t.Name, &t.Scope, &t.UserID, &t.Username, &t.CreatedAt, &t.LastUsedAt); err != nil {
+	if err := r.Scan(&t.ID, &t.Name, &t.Scope, &t.UserID, &t.Username, &t.CreatedAt, &t.LastUsedAt, &t.API); err != nil {
 		return nil, mapErr(err)
 	}
 	return &t, nil
@@ -52,16 +56,16 @@ func scanToken(r scanner) (*APIToken, error) {
 
 // CreateAPIToken stores a new token and returns its secret value, which is
 // only kept as a SHA-256 hash and can't be shown again.
-func (s *Store) CreateAPIToken(ctx context.Context, name, scope string, user *User) (*APIToken, string, error) {
+func (s *Store) CreateAPIToken(ctx context.Context, name, scope string, user *User, apiAccess bool) (*APIToken, string, error) {
 	secret := TokenPrefix + RandomToken(32)
 	t := now()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens(name,token_hash,scope,created_at,user_id) VALUES (?,?,?,?,?)`,
-		name, hashToken(secret), scope, t, user.ID)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens(name,token_hash,scope,created_at,user_id,api_access) VALUES (?,?,?,?,?,?)`,
+		name, hashToken(secret), scope, t, user.ID, apiAccess)
 	if err != nil {
 		return nil, "", mapErr(err)
 	}
 	id, _ := res.LastInsertId()
-	return &APIToken{ID: id, Name: name, Scope: scope, UserID: user.ID, Username: user.Username, CreatedAt: t}, secret, nil
+	return &APIToken{ID: id, Name: name, Scope: scope, UserID: user.ID, Username: user.Username, CreatedAt: t, API: apiAccess}, secret, nil
 }
 
 // APITokens lists tokens; userID 0 lists everyone's.
@@ -96,6 +100,7 @@ func (s *Store) APITokenBySecret(ctx context.Context, secret string) (*APIToken,
 		return nil, nil, ErrNotFound // a token without a user does nothing
 	}
 	u.Scope = t.Scope
+	u.Token = t
 	n := now()
 	if t.LastUsedAt == nil || n-*t.LastUsedAt >= 60 { // limit writes
 		_, _ = s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at=? WHERE id=?`, n, t.ID)

@@ -33,10 +33,15 @@ func TestValidImage(t *testing.T) {
 }
 
 func TestValidGitURL(t *testing.T) {
-	if ValidGitURL("https://github.com/user/repo") != nil {
-		t.Error("github https should be valid")
+	for _, ok := range []string{"https://github.com/user/repo", "git@github.com:u/r.git", "ssh://git@git.example.com:2222/team/app.git"} {
+		if err := ValidGitURL(ok); err != nil {
+			t.Errorf("%q should be valid: %v", ok, err)
+		}
 	}
-	for _, bad := range []string{"http://github.com/u/r", "git@github.com:u/r.git", "file:///etc", "https://u:p@github.com/u/r", "https://github.com", "ext::sh -c id", "--upload-pack=x"} {
+	if h, p, _ := ParseSSHURL("ssh://git@git.example.com:2222/team/app.git"); h != "git.example.com:2222" || p != "team/app.git" {
+		t.Errorf("ParseSSHURL = %q %q", h, p)
+	}
+	for _, bad := range []string{"http://github.com/u/r", "git@-oProxyCommand=x:u/r", "git@github.com:-u/r", "ssh://-x@host/r", "ssh://git@host/r?x", "git@github.com:../r", "file:///etc", "https://u:p@github.com/u/r", "https://github.com", "ext::sh -c id", "--upload-pack=x"} {
 		if ValidGitURL(bad) == nil {
 			t.Errorf("%q should be invalid", bad)
 		}

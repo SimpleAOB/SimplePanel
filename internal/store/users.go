@@ -72,6 +72,8 @@ type User struct {
 	// Scope caps what the request may do when it comes from an API token
 	// (empty for browser sessions).
 	Scope string `json:"-"`
+	// Token is the API token behind the request, if any.
+	Token *APIToken `json:"-"`
 }
 
 // IsAdmin reports whether the user may change server settings and users.
