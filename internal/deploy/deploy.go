@@ -48,6 +48,7 @@ type Manager struct {
 	builds   chan struct{} // limits concurrent builds
 	proxyMu  sync.Mutex
 	netMu    sync.Mutex // serialises project network creation
+	runsMu   sync.Mutex // serialises launch bookkeeping (see runs.go)
 
 	// OnDeploy, if set, is called when a deployment finishes.
 	OnDeploy func(app *store.App, d *store.Deployment)

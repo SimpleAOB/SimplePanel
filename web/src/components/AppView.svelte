@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, go, loadApps, setPanelOpen, showDeployment, timeAgo, appIcon } from '../lib/state.svelte.js';
+  import { ui, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon } from '../lib/state.svelte.js';
   import { formFromApp, payload } from '../lib/appform.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
@@ -189,6 +189,17 @@
   function masked(s) {
     return reveal ? s : '•'.repeat(Math.min(s?.length || 0, 16));
   }
+
+  // Opens the logs panel on the newest launch that crashed.
+  async function crashLogs() {
+    try {
+      const r = await api.get(`/apps/${aid}/runs`);
+      const crashed = r.runs.find((x) => x.state === 'failed' || x.state === 'rejected');
+      showRun(crashed ? crashed.number : 0);
+    } catch {
+      showRun(0);
+    }
+  }
 </script>
 
 {#if notFound}
@@ -220,7 +231,10 @@
   <div class="page">
     {#if error}<p class="error">{error}</p>{/if}
     {#if detail.status.message && detail.status.state === 'failing'}
-      <p class="error">The app is failing to start: {detail.status.message}</p>
+      <p class="error">
+        The app is failing to start: {detail.status.message}
+        <button class="linkish" onclick={crashLogs}>See what the last crash logged</button>
+      </p>
     {/if}
 
     {#if isPreview}

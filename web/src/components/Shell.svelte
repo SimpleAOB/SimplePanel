@@ -27,7 +27,12 @@
   let showPanel = $derived(ui.route.view === 'app' && ui.panelOpen);
 </script>
 
-<div class="shell" class:with-panel={showPanel} class:nav-open={ui.navOpen}>
+<div
+  class="shell"
+  class:with-panel={showPanel}
+  class:nav-open={ui.navOpen}
+  style={ui.panelWidth ? `--sp-panel-width: ${ui.panelWidth}px` : undefined}
+>
   <div class="nav">
     <Rail />
     <Sidebar />
