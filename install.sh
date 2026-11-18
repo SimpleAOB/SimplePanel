@@ -99,7 +99,10 @@ fi
 # server as it was.
 
 # pull IMAGE: pull, or fall back to a local copy. Sets pull_error on failure.
+# Swarm normally looks the tag up in the registry again when it creates the
+# service; resolve_image=--no-resolve-image makes it use the local copy.
 pull_error=
+resolve_image=
 pull() {
 	if out=$(docker pull --quiet "$1" 2>&1); then
 		return 0
@@ -107,6 +110,7 @@ pull() {
 	pull_error=$out
 	if docker image inspect "$1" >/dev/null 2>&1; then
 		warn "could not pull $1; using the copy already on this server"
+		resolve_image=--no-resolve-image
 		return 0
 	fi
 	return 1
@@ -148,8 +152,11 @@ else
 	[ -n "$SP_IMAGE" ] || explain_pull_error "$SP_REPO"
 fi
 
+sp_resolve_image=$resolve_image
+resolve_image=
 info "Pulling $TRAEFIK_IMAGE"
 pull "$TRAEFIK_IMAGE" || explain_pull_error "$TRAEFIK_IMAGE"
+traefik_resolve_image=$resolve_image
 
 # ---- Swarm -------------------------------------------------------------------
 
@@ -209,10 +216,12 @@ fi
 
 if docker service inspect simplepanel-traefik >/dev/null 2>&1; then
 	info "Updating Traefik"
-	docker service update --quiet --detach --image "$TRAEFIK_IMAGE" --args "$*" simplepanel-traefik >/dev/null
+	# shellcheck disable=SC2086
+	docker service update --quiet --detach $traefik_resolve_image --image "$TRAEFIK_IMAGE" --args "$*" simplepanel-traefik >/dev/null
 else
 	info "Starting Traefik"
-	docker service create --quiet --detach \
+	# shellcheck disable=SC2086
+	docker service create --quiet --detach $traefik_resolve_image \
 		--name simplepanel-traefik \
 		--network "$NETWORK" \
 		--constraint node.role==manager \
@@ -239,12 +248,13 @@ if [ "$existing_install" = true ]; then
 		proc_mount="--mount-add type=bind,source=/proc,target=/host/proc,readonly"
 	fi
 	# shellcheck disable=SC2086
-	docker service update --quiet --image "$SP_IMAGE" $proc_mount \
+	docker service update --quiet $sp_resolve_image --image "$SP_IMAGE" $proc_mount \
 		--env-add "SP_ENDPOINT_MODE=$endpoint_mode" --force simplepanel >/dev/null
 else
 	info "Starting SimplePanel"
 	# SimplePanel stops before its replacement starts: SQLite has one writer.
-	docker service create --quiet --detach \
+	# shellcheck disable=SC2086
+	docker service create --quiet --detach $sp_resolve_image \
 		--name simplepanel \
 		--network "$NETWORK" \
 		--constraint node.role==manager \
@@ -274,7 +284,9 @@ public_ip=$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
 
 printf '\n\033[1;32mSimplePanel is running.\033[0m\n\n'
 printf '  Open  http://%s:%s  to create your admin account.\n' "${public_ip:-<server-ip>}" "$SP_PORT"
-if [ "$existing_install" = false ]; then
+# Ask the panel rather than trusting existing_install: a re-run after an
+# install that never finished still has no admin account.
+if curl -fsS "http://127.0.0.1:$SP_PORT/api/setup" 2>/dev/null | grep -q '"needsSetup":true'; then
 	printf '  Do this now: the first person to open the page claims the server.\n'
 fi
 printf '\n  Ports 80 and 443 must be reachable for domains and HTTPS.\n'
