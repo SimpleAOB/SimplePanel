@@ -35,7 +35,7 @@
   const steps = ['Downloading', 'Verifying the image', 'Saving a copy of the database', 'Restarting SimplePanel'];
   let stepIndex = $derived.by(() => {
     if (!p) return -1;
-    if (p.phase === 'restarting') return 4;
+    if (p.phase === 'restarting' || (p.phase === 'failed' && p.rolledBack)) return 4;
     if (p.phase === 'done') return 5;
     const i = steps.findIndex((x) => p.step?.startsWith(x));
     return i < 0 ? 0 : i;
@@ -85,9 +85,9 @@
       <p class="muted">This is taking longer than usual. Check <code>docker service ps simplepanel</code> on the server, or keep this page open.</p>
     {:else if p.phase === 'failed'}
       <p class="error">
-        {p.rolledBack ? `The new version didn't start, so Swarm put ${s.current} back: ` : 'The update failed: '}{p.error}
+        {p.rolledBack ? `Swarm put ${s.current} back because ${p.error}.` : `The update failed: ${p.error}.`}
       </p>
-      <p class="faint small">Nothing else changed. The details are in the activity log under Settings › Users.</p>
+      <p class="faint small">Your apps weren't touched. The details are in the activity log under Settings › Users.</p>
       <div class="actions"><button class="btn" onclick={close}>Close</button></div>
     {/if}
   {/if}

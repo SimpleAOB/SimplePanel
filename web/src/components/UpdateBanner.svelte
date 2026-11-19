@@ -7,7 +7,12 @@
   let s = $derived(upd.status);
   let v = $derived(s?.check?.latest?.version);
   let job = $derived(s?.job);
-  let show = $derived(!!s && !hidden && (s.canUpdate ? !isDismissed(v) : job?.state === 'running' || job?.state === 'restarting'));
+  // A version that just failed or was rolled back isn't advertised again;
+  // Settings still offers it.
+  let failed = $derived(job && job.to === display(v) && (job.state === 'failed' || job.state === 'rolled_back'));
+  let show = $derived(
+    !!s && !hidden && (s.canUpdate ? !isDismissed(v) && !failed : job?.state === 'running' || job?.state === 'restarting'),
+  );
 </script>
 
 {#if show}
