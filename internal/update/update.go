@@ -546,7 +546,7 @@ func (u *Updater) run(ctx context.Context, j *Job, rel Release, by Actor) {
 
 	u.step(ctx, j, "Downloading "+j.To)
 	pctx, cancel := context.WithTimeout(ctx, pullTimeout)
-	err := u.dc.ImagePull(pctx, ref, io.Discard)
+	err := u.dc.ImagePull(pctx, ref, nil, io.Discard)
 	cancel()
 	if err != nil {
 		u.fail(ctx, j, by, fmt.Errorf("downloading %s: %w", ref, err))
