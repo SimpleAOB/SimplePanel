@@ -7,6 +7,7 @@
     failing: 'Failing',
     not_deployed: 'Not deployed',
     deploy_failed: 'Deploy failed',
+    deploying: 'Deploying…',
     unknown: 'Unknown',
   };
   let state = $derived(status?.state || 'unknown');

@@ -100,7 +100,7 @@
     </section>
     {/if}
 
-    {#if ui.advanced && isAdmin()}
+    {#if isAdmin()}
       <section class="card danger-zone">
         <h3>Delete project</h3>
         <p class="muted">Removes every app in this project and its domains. Volumes are kept.</p>

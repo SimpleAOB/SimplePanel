@@ -53,6 +53,7 @@ type Server struct {
 	updater *update.Updater
 
 	loginLimit   *limiter
+	loginGlobal  *limiter // failed sign-ins from all addresses
 	hookLimit    *limiter
 	mcpAuthLimit *limiter // failed MCP token attempts per IP
 }
@@ -61,6 +62,7 @@ func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *
 	return &Server{
 		store: st, docker: dc, deploy: dm, ui: ui, log: log, version: version,
 		loginLimit:   newLimiter(10, 5*time.Minute),
+		loginGlobal:  newLimiter(50, 5*time.Minute),
 		hookLimit:    newLimiter(30, time.Minute),
 		mcpAuthLimit: newLimiter(20, 10*time.Minute),
 		git:          gitprovider.New(),

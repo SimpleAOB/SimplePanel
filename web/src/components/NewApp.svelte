@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, data, go, loadApps, showDeployment, setAdvanced, isAdmin } from '../lib/state.svelte.js';
+  import { ui, data, go, loadApps, showDeployment, isAdmin } from '../lib/state.svelte.js';
   import { emptyForm, payload } from '../lib/appform.js';
   import AppFields from './AppFields.svelte';
   import Topbar from './Topbar.svelte';
@@ -23,6 +23,7 @@
   let port = $state(draft?.port || '');
   let envOpen = $state(!!draft?.form?.env);
   let wildcard = $state('');
+  let more = $state(false);
   let appSlug = $derived((form.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
   $effect(() => {
     const snapshot = JSON.stringify({ form: { ...form, gitToken: '' }, domain, port });
@@ -201,7 +202,13 @@
       Data is stored in a persistent volume. The database is only reachable from apps in this project.
     </p>
   {:else}
-  <AppFields bind:value={form} />
+  <AppFields bind:value={form} bind:more />
+  {#if !ui.advanced}
+    <div>
+      <button type="button" class="linkish" onclick={() => (more = !more)}>{more ? 'Show fewer options' : 'Show more options'}</button>
+      {#if !more}<small class="faint">({form.source === 'git' ? 'access token, build path, Dockerfile, ' : ''}replicas, limits, volumes, ports, command)</small>{/if}
+    </div>
+  {/if}
 
   <div class="card domain">
     <h3>Environment variables <span class="faint">(optional)</span></h3>
@@ -240,9 +247,6 @@
       {/if}
     {/if}
   </div>
-  {#if !ui.advanced}
-    <div><button type="button" class="linkish" onclick={() => setAdvanced(true)}>Show more options</button> <small class="faint">(access token, build path, replicas, limits, volumes, ports)</small></div>
-  {/if}
   {/if}
 
   {#if error}<p class="error">{error}</p>{/if}

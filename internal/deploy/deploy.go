@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -227,6 +228,34 @@ func FailureReason(log string) string {
 		r = r[:j]
 	}
 	return strings.TrimSpace(r)
+}
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+// StripANSI removes terminal colour codes.
+func StripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+// LogTail returns the last n meaningful lines of a build log before its
+// "Deployment failed" line, skipping download progress, for showing next to
+// the error.
+func LogTail(log string, n int) []string {
+	lines := strings.Split(StripANSI(log), "\n")
+	var out []string
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		l := strings.TrimSpace(lines[i])
+		low := strings.ToLower(l)
+		if l == "" || strings.HasPrefix(l, "==> Deployment failed") ||
+			strings.Contains(low, "pulling fs layer") || strings.Contains(low, "download complete") ||
+			strings.Contains(low, "extracting") || strings.Contains(low, "pull complete") ||
+			strings.Contains(low, "waiting") || strings.Contains(low, "verifying checksum") || strings.HasPrefix(low, "downloading") {
+			continue
+		}
+		out = append(out, l)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 // PickPort chooses the port web traffic should go to from the ports an

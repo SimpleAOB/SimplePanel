@@ -185,12 +185,12 @@
       <p class="muted">
         Backups are stored outside this server, on S3-compatible storage such as Cloudflare R2, Backblaze B2, AWS S3 or MinIO.
         {#if isAdmin()}
-          Add where to store them once, and every {panel ? 'backup' : 'database and app'} can use it.
+          {#if panel}Add a destination above first.{:else}Add a destination once, and every database and app can use it.{/if}
         {:else}
           Ask an admin to add a backup destination first.
         {/if}
       </p>
-      {#if isAdmin()}<div><button class="btn primary" onclick={() => (addingDest = true)}><Icon name="plus" size={14} /> Add backup storage</button></div>{/if}
+      {#if isAdmin() && !panel}<div><button class="btn primary" onclick={() => (addingDest = true)}><Icon name="plus" size={14} /> Add a destination</button></div>{/if}
     </section>
     {#if addingDest}
       <DestinationDialog onclose={() => (addingDest = false)} onsaved={async () => { addingDest = false; await load(); }} />

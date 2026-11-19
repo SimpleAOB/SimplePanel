@@ -138,6 +138,23 @@ func CleanRelPath(s string) (string, error) {
 }
 
 // ValidHost checks a domain name (no IPs, no wildcards, no ports).
+// CleanGitURL adds the https:// people leave out when they paste
+// "github.com/user/repo", and turns http:// into https://.
+func CleanGitURL(s string) string {
+	s = strings.TrimSpace(s)
+	switch {
+	case s == "", IsSSHURL(s), strings.Contains(s, "://"):
+		if strings.HasPrefix(s, "http://") {
+			return "https://" + strings.TrimPrefix(s, "http://")
+		}
+		return s
+	}
+	if host, rest, ok := strings.Cut(s, "/"); ok && strings.Contains(host, ".") && rest != "" {
+		return "https://" + s
+	}
+	return s
+}
+
 // CleanHost turns what people paste into a domain field into a bare host
 // name: "https://WWW.Example.com/path" becomes "www.example.com".
 func CleanHost(s string) string {

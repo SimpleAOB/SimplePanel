@@ -160,6 +160,11 @@ export function timeAgo(unix) {
 // Right-hand detail panel: app logs or a deployment's build log.
 export const panel = $state({ tab: 'logs', deploymentId: 0, run: 0, appId: 0 });
 
+// How a deployment's status reads, and the dot it gets ("running" would
+// look like a healthy app).
+export const depLabel = (s) => ({ queued: 'waiting', running: 'in progress' })[s] || s;
+export const depDot = (s) => (s === 'running' || s === 'queued' ? 'deploying' : s);
+
 export function showDeployment(id) {
   panel.tab = 'deploy';
   panel.deploymentId = id;

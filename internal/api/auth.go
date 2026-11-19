@@ -176,9 +176,17 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !s.loginLimit.Allow("login:"+ip) || !s.loginLimit.Allow("login:*global*") {
-		writeErr(w, 429, "too many attempts, try again in a few minutes")
+	// Only failed attempts count, so signing in and out a few times never
+	// locks anyone out. The server-wide cap is higher than the per-IP one.
+	if s.loginLimit.Blocked("login:"+ip) || s.loginGlobal.Blocked("login") {
+		writeErr(w, 429, "too many failed sign-ins, try again in 5 minutes")
 		return
+	}
+	fail := func() {
+		s.loginLimit.Allow("login:" + ip)
+		s.loginGlobal.Allow("login")
+		s.log.Warn("failed login", "ip", ip)
+		writeErr(w, 401, "wrong username or password")
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
@@ -187,18 +195,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	u, hash, err := s.store.UserByName(r.Context(), strings.TrimSpace(strings.ToLower(c.Username)))
 	if err != nil {
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
-		s.log.Warn("failed login", "ip", ip)
-		writeErr(w, 401, "wrong username or password")
+		fail()
 		return
 	}
 	if hash == "" { // invited, hasn't set a password yet
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
-		writeErr(w, 401, "wrong username or password")
+		fail()
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil {
-		s.log.Warn("failed login", "ip", ip)
-		writeErr(w, 401, "wrong username or password")
+		fail()
 		return
 	}
 	if err := s.setSession(w, r, u.ID); err != nil {

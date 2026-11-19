@@ -8,12 +8,14 @@
   let res = $state(null);
   let busy = $state(false);
   let failed = $state('');
+  let checkedAt = $state(null);
 
   async function check() {
     busy = true;
     failed = '';
     try {
       res = await api.get(`/dns/check?host=${encodeURIComponent(host)}&https=${https ? 1 : 0}`);
+      checkedAt = new Date();
     } catch (err) {
       failed = err.message;
     } finally {
@@ -57,6 +59,7 @@
     <span class="dot {level}"></span>
     <span class="label {level}">{label}</span>
   {/if}
+  {#if checkedAt && !busy}<span class="faint when">checked {checkedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>{/if}
   <button class="linkish" disabled={busy} onclick={check}>{busy ? 'Checking…' : 'Check again'}</button>
 </div>
 {#if message}<p class="msg">{message}</p>{/if}
@@ -65,9 +68,14 @@
   .status {
     display: flex;
     align-items: center;
-    gap: var(--sp-space-2);
+    flex-wrap: wrap;
+    gap: var(--sp-space-1) var(--sp-space-2);
     font-size: var(--sp-text-sm);
     padding-left: 24px;
+  }
+  .label,
+  .when {
+    white-space: nowrap;
   }
   .label.good {
     color: var(--sp-success);
@@ -87,7 +95,8 @@
   .dot.bad {
     background: var(--sp-danger);
   }
-  .linkish {
+  .linkish,
+  .when {
     font-size: var(--sp-text-xs);
   }
   .msg {

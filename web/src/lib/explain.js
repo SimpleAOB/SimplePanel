@@ -38,7 +38,7 @@ export function explainFailure(reason = '') {
     return { kind: 'registry', title: 'The registry refused to send the image', hint: 'If the image is private, add a login under Settings › Registries and pick it in the app’s settings.' };
   }
   if (r.startsWith('build:')) {
-    return { kind: 'build', title: 'The build failed', hint: 'The build log shows the step that failed, usually just above the last lines.' };
+    return { kind: 'build', title: 'The build failed', hint: 'These are the last lines the build printed. The error is usually among them; the full build log has the rest.' };
   }
   if (r.includes('out of memory') || r.includes('oom')) {
     return { kind: 'memory', title: 'The app ran out of memory', hint: 'Give it a higher memory limit, or free memory on the server.' };

@@ -96,3 +96,17 @@ func TestCloneError(t *testing.T) {
 		t.Errorf("branch: %v", e)
 	}
 }
+
+func TestCleanGitURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"github.com/a/b":           "https://github.com/a/b",
+		" https://github.com/a/b ": "https://github.com/a/b",
+		"http://gitlab.com/a/b":    "https://gitlab.com/a/b",
+		"git@github.com:a/b.git":   "git@github.com:a/b.git",
+		"foo":                      "foo",
+	} {
+		if got := CleanGitURL(in); got != want {
+			t.Errorf("CleanGitURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

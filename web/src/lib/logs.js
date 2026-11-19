@@ -24,10 +24,16 @@ export function levelOf(text) {
 // Splits log text into lines of { ts, text, level }. Indented lines right
 // after an error (stack traces) count as part of it, so a whole trace
 // stays highlighted.
+// Terminal colour codes, which builds print and browsers can't show.
+const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+export function stripAnsi(s) {
+  return s ? s.replace(ANSI, '') : s;
+}
+
 export function parseLog(raw) {
   const out = [];
   if (!raw) return out;
-  const lines = raw.split('\n');
+  const lines = stripAnsi(raw).split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
   let prev = '';
   for (const l of lines) {

@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, data, go, loadApps, setPanelOpen, setAdvanced, showDeployment, showRun, timeAgo, appIcon, isAdmin } from '../lib/state.svelte.js';
+  import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon, isAdmin, depLabel, depDot } from '../lib/state.svelte.js';
   import { explainFailure, DOCKERFILE_HELP } from '../lib/explain.js';
   import DomainStatus from './DomainStatus.svelte';
   import { formFromApp, payload } from '../lib/appform.js';
@@ -77,16 +77,21 @@
   // The last deploy failed and nothing newer replaced it.
   let failed = $derived(detail?.lastDeployment?.status === 'failed' ? detail.lastDeployment : null);
   let failure = $derived(failed ? explainFailure(failed.reason || '') : null);
-  let badge = $derived(failed && detail?.status?.state === 'not_deployed' ? { state: 'deploy_failed' } : detail?.status);
+  let badge = $derived(detail?.status);
   // The port a domain sends traffic to: its own, or the image's (automatic).
   const routePort = (d) => d.port || detail?.app?.imagePort || 80;
   let tokenFix = $state('');
 
   async function saveToken(e) {
     e.preventDefault();
-    await saveApp({ ...formFromApp(detail.app), gitToken: tokenFix.trim() }, true);
-    tokenFix = '';
+    if (await saveApp({ ...formFromApp(detail.app), gitToken: tokenFix.trim() }, true)) tokenFix = '';
   }
+  let imageFix = $state('');
+  async function saveImage(e) {
+    e.preventDefault();
+    await saveApp({ ...formFromApp(detail.app), image: imageFix.trim() }, true);
+  }
+  let replaceVar = $state(false);
 
   async function setDomainPort(d, port) {
     domainErr = '';
@@ -111,9 +116,15 @@
   async function useInApp(e) {
     e.preventDefault();
     useMsg = '';
+    const target = otherApps.find((x) => x.id === Number(useApp));
+    const name = (useVar || urlVar).trim();
+    const has = (target?.env || '').split('\n').some((l) => l.trim().startsWith(name + '='));
+    if (has && !replaceVar) {
+      replaceVar = true;
+      return;
+    }
+    replaceVar = false;
     await action('use', async () => {
-      const target = otherApps.find((x) => x.id === Number(useApp));
-      const name = (useVar || urlVar).trim();
       const r = await api.patch(`/apps/${useApp}/env?deploy=1`, { set: { [name]: detail.database.url } });
       if (r.deployment) showDeployment(r.deployment.id);
       useMsg = `Added ${name} to ${target?.name || 'the app'} and started a deploy.`;
@@ -165,8 +176,11 @@
   async function refresh(resetForm = false) {
     try {
       const [d, deps] = await Promise.all([api.get(`/apps/${aid}`), api.get(`/apps/${aid}/deployments`)]);
+      const first = !detail;
       detail = d;
       deployments = deps;
+      // An app that isn't up yet has no app logs: show its deploy instead.
+      if (first && d.lastDeployment && ['deploy_failed', 'deploying'].includes(d.status?.state)) showDeployment(d.lastDeployment.id);
       if (resetForm || !form) {
         form = formFromApp(d.app);
         env = d.app.env;
@@ -214,16 +228,30 @@
 
   async function saveApp(fields, deployAfter) {
     saved = '';
+    let ok = false;
     await action('save', async () => {
       await api.put(`/apps/${aid}`, payload(fields));
+      ok = true;
       saved = deployAfter ? 'Saved. Deploying…' : 'Saved. Deploy to apply the changes.';
       if (deployAfter) {
         const d = await api.post(`/apps/${aid}/deploy`);
         showDeployment(d.id);
       }
     });
-    await refresh(true);
+    // Keep what the person typed if the save failed, so they can fix it.
+    if (ok) await refresh(true);
+    return ok;
   }
+  // Errors belong to the tab they happened on.
+  let lastTab = '';
+  $effect(() => {
+    if (tab !== lastTab) {
+      lastTab = tab;
+      error = '';
+      saved = '';
+    }
+  });
+  let more = $state(false);
 
   function saveEnv(e) {
     e.preventDefault();
@@ -309,7 +337,7 @@
     {detail.app.name}
     <StatusBadge status={badge} />
     {#snippet actions()}
-      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><Icon name="refresh" size={16} /> {isDb ? 'Apply changes' : 'Deploy'}</button>{/if}
+      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><Icon name="refresh" size={16} /> <span class="lbl">{isDb ? 'Redeploy' : 'Deploy'}</span></button>{/if}
       <button
         class="btn icon"
         class:active={ui.panelOpen}
@@ -352,9 +380,17 @@
             <a class="btn ghost" href="#/p/{pid}/a/{aid}/settings">Change the build type</a>
           </div>
         {:else if canDeploy && (failure.kind === 'branch' || failure.kind === 'build-path')}
-          <div class="row fix"><button class="btn" onclick={() => { setAdvanced(true); go(`/p/${pid}/a/${aid}/settings`); }}>Open settings</button></div>
+          <div class="row fix"><button class="btn" onclick={() => { more = true; go(`/p/${pid}/a/${aid}/settings`); }}>Open settings</button></div>
+        {:else if canDeploy && failure.kind === 'image'}
+          <form class="row tight fix" onsubmit={saveImage}>
+            <input type="text" class="mono" value={imageFix || detail.app.image} oninput={(e) => (imageFix = e.currentTarget.value)} aria-label="Image" required />
+            <button class="btn primary" disabled={!!busy}>Save and deploy</button>
+          </form>
         {:else if failure.kind === 'registry' && isAdmin()}
           <div class="row fix"><a class="btn" href="#/settings/registries">Add a registry login</a></div>
+        {/if}
+        {#if failed.tail?.length && !['git-auth', 'server-app', 'image'].includes(failure.kind)}
+          <pre class="tail">{failed.tail.join('\n')}</pre>
         {/if}
       </section>
     {/if}
@@ -390,7 +426,7 @@
         <div class="row buttons">
           {#if canDeploy && detail.status.state === 'stopped'}
             <button class="btn" disabled={!!busy} onclick={start}>Start</button>
-          {:else if canDeploy && detail.status.state !== 'not_deployed'}
+          {:else if canDeploy && !['not_deployed', 'deploy_failed', 'deploying'].includes(detail.status.state)}
             <button class="btn" disabled={!!busy} onclick={restart}>Restart</button>
             <button class="btn" disabled={!!busy} onclick={stop}>Stop</button>
           {/if}
@@ -456,17 +492,18 @@
               <form class="row use" onsubmit={useInApp}>
                 <label class="field">
                   <span>App</span>
-                  <select bind:value={useApp}>
+                  <select bind:value={useApp} onchange={() => (replaceVar = false)}>
                     {#each otherApps as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
                   </select>
                 </label>
                 <label class="field">
                   <span>Variable</span>
-                  <input type="text" bind:value={useVar} class="mono" spellcheck="false" />
+                  <input type="text" bind:value={useVar} class="mono" spellcheck="false" oninput={() => (replaceVar = false)} />
                 </label>
-                <button class="btn primary" disabled={!!busy}>Add and redeploy</button>
-                <button type="button" class="btn ghost" onclick={() => (useOpen = false)}>Cancel</button>
+                <button class="btn primary" disabled={!!busy}>{replaceVar ? 'Replace and redeploy' : 'Add and redeploy'}</button>
+                <button type="button" class="btn ghost" onclick={() => { useOpen = false; replaceVar = false; }}>Cancel</button>
               </form>
+              {#if replaceVar}<p class="warn">{otherApps.find((x) => x.id === Number(useApp))?.name} already has {useVar}. Replace it, or type another variable name.</p>{/if}
               <small class="faint">Adds the connection URL to the app's environment variables and redeploys it.</small>
             {/if}
           {/if}
@@ -537,10 +574,16 @@
                     <button type="button" class="btn ghost small" onclick={() => (editPort = 0)}>Cancel</button>
                   </form>
                 {:else}
-                  <span class="faint">→ port {routePort(d)}{d.port ? '' : ' (automatic)'}{d.https ? '' : ' · HTTP only'}</span>
-                  {#if canDeploy}<button class="btn ghost small" onclick={() => { editPort = d.id; editPortValue = d.port || ''; }}>Change port</button>{/if}
+                  <span class="meta">
+                    <span class="faint">→ port {routePort(d)}{d.port ? '' : ' (automatic)'}{d.https ? '' : ' · HTTP only'}</span>
+                    {#if canDeploy}
+                      <span class="acts">
+                        <button class="btn ghost small" onclick={() => { editPort = d.id; editPortValue = d.port || ''; }}>Change port</button>
+                        <button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>
+                      </span>
+                    {/if}
+                  </span>
                 {/if}
-                {#if canDeploy}<button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>{/if}
               </div>
               {#if d.port && detail.app.imagePort && d.port !== detail.app.imagePort}
                 <p class="warn">
@@ -635,8 +678,8 @@
           {#each deployments as d (d.id)}
             <li>
               <button class="dep" onclick={() => showDeployment(d.id)}>
-                <span class="dot {d.status}"></span>
-                <span class="grow">#{d.id} · {d.status}{#if d.commitSha} <code class="sha">{d.commitSha.slice(0, 7)}</code> <span class="faint msg">{d.commitMsg}</span>{/if}</span>
+                <span class="dot {depDot(d.status)}"></span>
+                <span class="grow">#{d.id} · {depLabel(d.status)}{#if d.commitSha} <code class="sha">{d.commitSha.slice(0, 7)}</code> <span class="faint msg">{d.commitMsg}</span>{/if}</span>
                 <span class="faint">{d.trigger}</span>
                 <span class="faint">{timeAgo(d.createdAt)}</span>
               </button>
@@ -658,10 +701,13 @@
       {/if}
     {:else if tab === 'settings' && form}
       <form class="card" onsubmit={saveSettings}>
-        <h3>App settings</h3>
-        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} />
+        <h3>{isDb ? 'Database settings' : 'App settings'}</h3>
+        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} bind:more />
         {#if !ui.advanced}
-          <div><button type="button" class="linkish" onclick={() => setAdvanced(true)}>Show more options</button> <small class="faint">(access token, build path, replicas, limits, volumes, ports)</small></div>
+          <div>
+            <button type="button" class="linkish" onclick={() => (more = !more)}>{more ? 'Show fewer options' : 'Show more options'}</button>
+            {#if !more}<small class="faint">({isDb ? 'version, CPU and memory limits, volumes, ports' : form.source === 'git' ? 'access token, build path, Dockerfile, replicas, limits, volumes, ports, command' : 'replicas, limits, volumes, ports, command'})</small>{/if}
+          </div>
         {/if}
         <div class="row end">
           {#if saved}<span class="ok">{saved}</span>{/if}
@@ -681,13 +727,13 @@
       {#if canManage}
       <section class="card danger-zone">
         <h3>Delete {isDb ? 'database' : 'app'}</h3>
-        <p class="muted">{isDb ? 'Stops the database. Its data volume is kept on the server.' : 'Stops the app and removes its domains. Volumes are kept.'}</p>
+        <p class="muted">{isDb ? 'Removes the database from SimplePanel. Its data stays on the server’s disk in a Docker volume, so it can be recovered by hand.' : 'Removes the app and its domains. Data in its volumes stays on the server’s disk.'}</p>
         <div class="row">
           <label class="field">
-            <span>Type the app name to confirm</span>
+            <span>Type the {isDb ? 'database' : 'app'} name to confirm</span>
             <input type="text" bind:value={confirmName} placeholder={detail.app.name} />
           </label>
-          <button class="btn danger" disabled={confirmName !== detail.app.name || !!busy} onclick={removeApp}>Delete app</button>
+          <button class="btn danger" disabled={confirmName !== detail.app.name || !!busy} onclick={removeApp}>Delete {isDb ? 'database' : 'app'}</button>
         </div>
       </section>
       {/if}
@@ -896,6 +942,17 @@
   .envbar .end {
     margin-left: auto;
   }
+  .tail {
+    margin: 0;
+    padding: var(--sp-space-2) var(--sp-space-3);
+    background: var(--sp-bg-main);
+    border-radius: var(--sp-radius-md);
+    font-size: var(--sp-text-xs);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 180px;
+    overflow: auto;
+  }
   .tokenform {
     flex: 1 1 260px;
   }
@@ -915,7 +972,16 @@
     font-weight: var(--sp-weight-medium);
     overflow-wrap: anywhere;
   }
-  .dline .btn:first-of-type {
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+  .acts {
+    display: flex;
+    gap: var(--sp-space-1);
     margin-left: auto;
   }
   .inline {
@@ -949,6 +1015,15 @@
   @media (max-width: 560px) {
     .row.tight {
       flex-wrap: wrap;
+    }
+    .lbl {
+      display: none;
+    }
+    .tabs {
+      flex-wrap: wrap;
+    }
+    .acts {
+      margin-left: 0;
     }
   }
 </style>

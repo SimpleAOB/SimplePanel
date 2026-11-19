@@ -2,14 +2,17 @@
   // Source + runtime fields for an app. `value` is a plain object bound
   // by the parent. Advanced fields only show when Advanced view is on.
   import { onMount } from 'svelte';
-  import { ui, setAdvanced, isAdmin } from '../lib/state.svelte.js';
+  import { ui, isAdmin } from '../lib/state.svelte.js';
   import { applyStaticPreset } from '../lib/staticpresets.js';
   import { loadRegistries, registryHost } from '../lib/registries.js';
   import Icon from './Icon.svelte';
   import StaticSiteHelp from './StaticSiteHelp.svelte';
   import RepoPicker from './RepoPicker.svelte';
 
-  let { value = $bindable(), hasToken = false, showRuntime = true, database = false } = $props();
+  // more: show this form's advanced fields without turning on Advanced
+  // view everywhere.
+  let { value = $bindable(), hasToken = false, showRuntime = true, database = false, more = $bindable(false) } = $props();
+  let adv = $derived(ui.advanced || more);
 
   let helpOpen = $state(false);
 
@@ -41,7 +44,7 @@
   // Fill the build fields from a preset, and show them so the user can check.
   function usePreset(preset) {
     applyStaticPreset(value, preset);
-    setAdvanced(true);
+    more = true;
     helpOpen = false;
   }
 
@@ -120,11 +123,11 @@
           Builds the Dockerfile in the repository.
         {:else}
           Serves HTML, CSS and JS files with a small nginx server on port 80.
-          {#if !ui.advanced}Using Vite, Astro, Hugo or similar? <button type="button" class="inline-link" onclick={() => (helpOpen = true)}>Pick your tool</button> to add a build step.{/if}
+          {#if !adv}Using Vite, Astro, Hugo or similar? <button type="button" class="inline-link" onclick={() => (helpOpen = true)}>Pick your tool</button> to add a build step.{/if}
         {/if}
       </small>
     </div>
-    {#if ui.advanced}
+    {#if adv}
       {#if !value.gitProviderId}
       <div class="row">
         <label class="field">
@@ -172,7 +175,7 @@
     {/if}
   {/if}
 
-  {#if showRuntime && ui.advanced}
+  {#if showRuntime && adv}
     <h3 class="sub">Runtime</h3>
     <div class="row">
       {#if !database}

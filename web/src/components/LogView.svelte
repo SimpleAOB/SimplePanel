@@ -18,6 +18,19 @@
   } = $props();
 
   let box = $state();
+  let inner = $state();
+
+  // Panels open, fonts load and long lines re-wrap after the text arrives,
+  // all of which change the height; stay at the end while following.
+  $effect(() => {
+    if (!box || !inner) return;
+    const ro = new ResizeObserver(() => {
+      if (follow) box.scrollTop = box.scrollHeight;
+    });
+    ro.observe(box);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  });
   let lines = $derived(parseLog(text));
   let visible = $derived.by(() => {
     const keep = LEVELS[level] || LEVELS.all;
@@ -39,12 +52,22 @@
   async function toBottom() {
     await tick();
     if (box) box.scrollTop = box.scrollHeight;
+    // Long lines wrap after layout, which can add height; scroll again.
+    requestAnimationFrame(() => {
+      if (box && follow) box.scrollTop = box.scrollHeight;
+    });
   }
 
   // Scrolling up pauses follow; scrolling back to the end resumes it.
+  // Only the person scrolling up pauses it: content growing under us
+  // doesn't.
+  let lastTop = 0;
   function onScroll() {
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
-    if (atEnd !== follow) follow = atEnd;
+    const up = box.scrollTop < lastTop - 4;
+    lastTop = box.scrollTop;
+    if (atEnd && !follow) follow = true;
+    else if (!atEnd && up && follow) follow = false;
   }
 
   function jump() {
@@ -65,6 +88,7 @@
     aria-live="off"
     tabindex="0"
   >
+    <div bind:this={inner}>
     {#if lines.length === 0}
       <p class="empty">{empty}</p>
     {:else if visible.length === 0}
@@ -78,6 +102,7 @@
         </div>
       {/each}
     {/if}
+    </div>
   </div>
   {#if !follow && visible.length > 0}
     <button class="jump btn small" onclick={jump}>Jump to latest ↓</button>

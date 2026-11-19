@@ -59,6 +59,7 @@
 
   // Inline "create a project" for the first step.
   let projName = $state('');
+  let newOpen = $state(false);
   let projErr = $state('');
   let projSlug = $derived(projName.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
   async function createProject(e) {
@@ -86,7 +87,10 @@
 <Topbar>
   Overview
   {#snippet actions()}
-    {#if isAdmin()}<button class="btn" onclick={() => (importing = true)}>Import project</button>{/if}
+    {#if isAdmin()}
+      <button class="btn" onclick={() => (importing = true)}>Import project</button>
+      <button class="btn primary" onclick={() => { newOpen = true; }}>New project</button>
+    {/if}
   {/snippet}
 </Topbar>
 {#if importing}<ImportDialog onclose={() => (importing = false)} />{/if}
@@ -122,10 +126,14 @@
                 {:else if st.key === 'app'}
                   <div><button class="btn primary" onclick={() => go(`/p/${data.projects[0].id}/new`)}>New app</button></div>
                 {:else if st.key === 'domain'}
-                  <div><a class="btn" href="#/settings">Set a panel domain</a></div>
+                  <div><a class="btn primary" href="#/settings">Set a panel domain</a></div>
                 {:else if st.key === 'backups'}
-                  <div><a class="btn" href="#/settings/backups">Add backup storage</a></div>
+                  <div><a class="btn primary" href="#/settings/backups">Add a backup destination</a></div>
                 {/if}
+              {:else if !st.done && st.key === 'domain'}
+                <div><a class="linkish" href="#/settings">Set a panel domain</a></div>
+              {:else if !st.done && st.key === 'backups'}
+                <div><a class="linkish" href="#/settings/backups">Add a backup destination</a></div>
               {/if}
             </div>
           </li>
@@ -136,6 +144,16 @@
 
   <section>
     <h2>Projects</h2>
+    {#if newOpen}
+      <form class="card row newproj" onsubmit={createProject}>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input type="text" bind:value={projName} placeholder="my-website" aria-label="Project name" autofocus required />
+        <button class="btn primary">Create project</button>
+        <button type="button" class="btn ghost" onclick={() => (newOpen = false)}>Cancel</button>
+        {#if projSlug && projSlug !== projName}<small class="faint">Will be created as <strong>{projSlug}</strong>.</small>{/if}
+        {#if projErr}<p class="error">{projErr}</p>{/if}
+      </form>
+    {/if}
     {#if data.projects.length === 0}
       <div class="card empty">
         {#if isAdmin()}
@@ -237,6 +255,13 @@
     place-items: center;
     font-weight: var(--sp-weight-bold);
     flex: none;
+  }
+  .newproj {
+    margin-bottom: var(--sp-space-3);
+    align-items: center;
+  }
+  .newproj input {
+    flex: 1 1 200px;
   }
   .start {
     display: flex;
