@@ -10,6 +10,7 @@
   import Monitoring from './settings/Monitoring.svelte';
   import Account from './settings/Account.svelte';
   import Git from './settings/Git.svelte';
+  import Registries from './settings/Registries.svelte';
   import ApiCli from './settings/ApiCli.svelte';
 
   let sections = $derived(settingsSections(isAdmin()));
@@ -36,6 +37,8 @@
     <Monitoring />
   {:else if current === 'git'}
     <Git />
+  {:else if current === 'registries'}
+    <Registries />
   {:else if current === 'api'}
     <ApiCli />
   {:else if current === 'ai'}

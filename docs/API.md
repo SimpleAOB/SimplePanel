@@ -52,6 +52,8 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Activity log | `GET /api/audit?limit=100&source=api` |
 | Read-only database query | `POST /api/apps/{id}/query {"query","timeout","limit","explain"}` (needs the Query databases permission unless you're an admin) |
 | Tables, collections or keys | `GET /api/apps/{id}/query/tables` (Redis: `?pattern=user:*`), columns: `GET /api/apps/{id}/query/columns?table=public.orders` |
+| Registry logins (private images) | `GET /api/registries`; admins: `POST /api/registries {"name","server","username","password"}` (signs in first; add `"skipCheck":true` to skip), `PUT`/`DELETE /api/registries/{id}`, `POST /api/registries/test` |
+| Pick a service's registry login | `PUT /api/apps/{id}` with `"registryId": N` (`0` for none; leave it out to use the only saved login for the image's registry) |
 | Saved queries and your history | `GET`/`POST /api/apps/{id}/query/saved`, `DELETE /api/saved-queries/{id}`, `GET /api/apps/{id}/query/history` |
 
 A deploy returns at once, before the build finishes. Poll
