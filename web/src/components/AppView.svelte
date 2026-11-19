@@ -1,8 +1,9 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon } from '../lib/state.svelte.js';
+  import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon } from '../lib/state.svelte.js';
   import { formFromApp, payload } from '../lib/appform.js';
+  import { guardedPost } from '../lib/memory.svelte.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -108,11 +109,14 @@
     return () => clearInterval(t);
   });
 
+  let notice = $state(''); // warnings from the server, e.g. about memory
   async function action(name, fn) {
     busy = name;
     error = '';
+    notice = '';
     try {
-      await fn();
+      const r = await fn();
+      if (r?.warnings?.length) notice = r.warnings.join(' ');
       await refresh(false);
       loadApps(pid).catch(() => {});
     } catch (err) {
@@ -124,8 +128,9 @@
 
   const deploy = () =>
     action('deploy', async () => {
-      const d = await api.post(`/apps/${aid}/deploy`);
+      const d = await guardedPost(`/apps/${aid}/deploy`);
       showDeployment(d.id);
+      return d;
     });
   let aiMsg = $state('');
   const toggleAI = () =>
@@ -133,9 +138,9 @@
       const r = await api.put(`/apps/${aid}/ai-access`, { enabled: !detail.aiAccess });
       aiMsg = r.warning || '';
     });
-  const restart = () => action('restart', () => api.post(`/apps/${aid}/restart`));
+  const restart = () => action('restart', () => guardedPost(`/apps/${aid}/restart`));
   const stop = () => action('stop', () => api.post(`/apps/${aid}/stop`));
-  const start = () => action('start', () => api.post(`/apps/${aid}/start`));
+  const start = () => action('start', () => guardedPost(`/apps/${aid}/start`));
 
   async function saveApp(fields, deployAfter) {
     saved = '';
@@ -143,8 +148,9 @@
       await api.put(`/apps/${aid}`, payload(fields));
       saved = deployAfter ? 'Saved. Deploying…' : 'Saved. Deploy to apply the changes.';
       if (deployAfter) {
-        const d = await api.post(`/apps/${aid}/deploy`);
+        const d = await guardedPost(`/apps/${aid}/deploy`);
         showDeployment(d.id);
+        return d;
       }
     });
     await refresh(true);
@@ -252,6 +258,8 @@
 
   <div class="page" class:wide={tab === 'query'}>
     {#if error}<p class="error">{error}</p>{/if}
+    {#if notice}<p class="notice">{notice}</p>{/if}
+    {#if detail.status.state === 'unknown' && detail.status.message && data.docker?.ok !== false}<p class="notice">{detail.status.message}</p>{/if}
     {#if detail.status.message && detail.status.state === 'failing'}
       <p class="error">
         The app is failing to start: {detail.status.message}
@@ -494,7 +502,7 @@
     {:else if tab === 'settings' && form}
       <form class="card" onsubmit={saveSettings}>
         <h3>App settings</h3>
-        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} />
+        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} kind={detail.app.kind || 'app'} appId={detail.app.id} />
         {#if !ui.advanced}
           <small class="faint">Turn on Advanced view (bottom left) for branch, tokens, replicas, limits, volumes and ports.</small>
         {/if}

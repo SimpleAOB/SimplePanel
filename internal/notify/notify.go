@@ -47,6 +47,8 @@ const (
 	UpdateAvailable  = "panel.update_available"
 	PanelUpdated     = "panel.updated"
 	UpdateFailed     = "panel.update_failed"
+	DockerDown       = "docker.down"
+	DockerRecovered  = "docker.recovered"
 	Test             = "test"
 )
 
@@ -74,6 +76,8 @@ var EventTypes = []EventType{
 	{UpdateAvailable, "SimplePanel update available", true},
 	{PanelUpdated, "SimplePanel updated", true},
 	{UpdateFailed, "SimplePanel update failed", true},
+	{DockerDown, "Docker not responding", true},
+	{DockerRecovered, "Docker responding again", true},
 }
 
 func validEvent(e string) bool {

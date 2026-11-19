@@ -51,6 +51,7 @@ type Server struct {
 	manifests manifestStates
 
 	updater *update.Updater
+	https   httpsOnlyCache
 
 	loginLimit   *limiter
 	hookLimit    *limiter
@@ -105,6 +106,9 @@ func (s *Server) Handler() http.Handler {
 	a("GET /api/me", s.me)
 	a("POST /api/me/password", s.changePassword)
 	a("GET /api/system", s.system)
+	a("GET /api/capacity", s.getCapacity)
+	a("PUT /api/capacity/settings", s.putCapacitySettings)
+	a("GET /api/docker", func(w http.ResponseWriter, r *http.Request, _ *store.User) { writeJSON(w, 200, s.docker.Health()) })
 	a("PUT /api/settings", s.putSettings)
 	a("GET /api/tokens", s.listTokens)
 	a("POST /api/tokens", s.createToken)
@@ -241,6 +245,9 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if s.enforceHTTPS(w, r) {
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 			limit := int64(maxBody)

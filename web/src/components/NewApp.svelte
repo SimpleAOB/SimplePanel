@@ -3,6 +3,8 @@
   import { api } from '../lib/api.js';
   import { ui, data, go, loadApps, showDeployment } from '../lib/state.svelte.js';
   import { emptyForm, payload } from '../lib/appform.js';
+  import { guardedPost } from '../lib/memory.svelte.js';
+  import MemoryPicker from './MemoryPicker.svelte';
   import AppFields from './AppFields.svelte';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
@@ -19,6 +21,7 @@
   let dbPassword = $state('');
   let showPw = $state(false);
   let dbImage = $state('');
+  let dbMemory = $state(0);
   let engines = $state([]);
   let selected = $derived(engines.find((e) => e.key === engine));
   // Redis has only a password; older servers don't send customUser.
@@ -45,12 +48,13 @@
 
   async function submitDatabase() {
     const pid = ui.route.projectId;
-    const r = await api.post(`/projects/${pid}/databases`, {
+    const r = await guardedPost(`/projects/${pid}/databases`, {
       name: form.name.trim().toLowerCase(),
       engine,
       image: ui.advanced ? dbImage.trim() : '',
       user: customUser ? dbUser.trim() : '',
       password: dbPassword,
+      memoryMb: Number(dbMemory) || 0,
     });
     await loadApps(pid);
     showDeployment(r.deployment.id);
@@ -75,7 +79,7 @@
           error = `App created, but the domain was not added: ${err.message}`;
         }
       }
-      const dep = await api.post(`/apps/${app.id}/deploy`);
+      const dep = await guardedPost(`/apps/${app.id}/deploy`);
       await loadApps(pid);
       showDeployment(dep.id);
       go(`/p/${pid}/a/${app.id}`);
@@ -147,6 +151,7 @@
     {:else if engine === 'redis'}
       <small class="hint">Every write is saved to disk (append-only file), so data survives restarts.</small>
     {/if}
+    <MemoryPicker bind:value={dbMemory} kind={engine} />
     <p class="muted">
       Data is stored in a persistent volume. The database is only reachable from apps in this project.
     </p>

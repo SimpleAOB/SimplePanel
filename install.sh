@@ -13,6 +13,12 @@
 #   TRAEFIK_IMAGE   Traefik image       (default traefik:v3.6)
 #   ACME_EMAIL      email for Let's Encrypt expiry notices (optional)
 #   SP_PORT         port for the panel  (default 3000)
+#   SP_NO_SWAP=1    don't add a swap file when the server has none
+#   SP_NO_TUNING=1  don't change kernel memory settings (sysctl)
+#   SP_PROTECT_HOST=1  set up the server-wide memory cap on a server where
+#                   Docker is already running containers (this restarts
+#                   Docker once). New servers get it automatically.
+#   SP_PROTECT_HOST=0  never set up the memory cap
 
 set -eu
 
@@ -70,13 +76,7 @@ if ! need docker; then
 	systemctl enable --now docker >/dev/null 2>&1 || true
 fi
 
-docker info >/dev/null 2>&1 || die "Docker is installed but not running (try: systemctl start docker)"
-
-has_service() { docker service inspect "$1" >/dev/null 2>&1; }
-
-if has_service simplepanel; then
-	existing_install=true
-fi
+timeout 60 docker info >/dev/null 2>&1 || die "Docker is installed but not running or not responding (try: systemctl restart docker)"
 
 # Ports must be free, except those held by SimplePanel's own services: an
 # upgrade, or a re-run after an install that stopped half way, already
@@ -158,6 +158,140 @@ info "Pulling $TRAEFIK_IMAGE"
 pull "$TRAEFIK_IMAGE" || explain_pull_error "$TRAEFIK_IMAGE"
 traefik_resolve_image=$resolve_image
 
+# ---- Memory safety -------------------------------------------------------------
+# A server that runs out of memory doesn't just kill one app: the kernel
+# starts evicting everything, Docker and Swarm stop answering and even SSH
+# hangs. Three things keep that from happening:
+#   1. a swap file, so a short spike slows things down instead of failing;
+#   2. kernel settings that keep some memory free for the system;
+#   3. a cap on what all containers together may use (simplepanel.slice),
+#      leaving memory for the kernel, SSH and Docker itself. If containers
+#      hit it, the kernel stops the biggest one instead of the server
+#      locking up. The panel sizes each service's own limit within it.
+
+mem_total_mb=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+# Must match deploy.AutoReserveMB: 15% of RAM, at least 384 MB, at most 2 GB.
+reserve_mb=$((mem_total_mb * 15 / 100))
+[ "$reserve_mb" -lt 384 ] && reserve_mb=384
+[ "$reserve_mb" -gt 2048 ] && reserve_mb=2048
+cap_mb=$((mem_total_mb - reserve_mb))
+[ "$cap_mb" -lt 256 ] && cap_mb=256
+
+if [ "${SP_NO_SWAP:-}" != 1 ] && [ -z "$(swapon --noheadings 2>/dev/null)" ] && [ ! -e /swapfile ]; then
+	free_mb=$(df -Pm / | awk 'NR == 2 {print $4}')
+	if [ "${free_mb:-0}" -gt 8192 ]; then
+		info "Adding a 2 GB swap file (/swapfile)"
+		if { fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; } &&
+			chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile; then
+			grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+		else
+			warn "could not add a swap file; continuing without one"
+			swapoff /swapfile 2>/dev/null || true
+			rm -f /swapfile
+		fi
+	else
+		warn "less than 8 GB of disk free; not adding a swap file"
+	fi
+fi
+
+if [ "${SP_NO_TUNING:-}" != 1 ] && [ -d /etc/sysctl.d ]; then
+	min_free=65536
+	[ "$mem_total_mb" -lt 2048 ] && min_free=32768
+	cur_free=$(cat /proc/sys/vm/min_free_kbytes 2>/dev/null || echo 0)
+	[ "$cur_free" -gt "$min_free" ] && min_free=$cur_free
+	cat >/etc/sysctl.d/90-simplepanel.conf <<SYSCTL
+# Written by the SimplePanel installer (re-run it to update; delete to undo).
+# Prefer dropping cache over swapping apps out, but use swap before the
+# kernel runs out of memory.
+vm.swappiness = 10
+# Keep some memory free for the kernel itself, so the server stays
+# reachable under memory pressure.
+vm.min_free_kbytes = $min_free
+SYSCTL
+	sysctl -q -p /etc/sysctl.d/90-simplepanel.conf >/dev/null 2>&1 || warn "could not apply kernel memory settings"
+fi
+
+# The memory cap needs systemd, cgroup v2 and Docker's systemd cgroup
+# driver (the default on current Ubuntu and Debian).
+protect=${SP_PROTECT_HOST:-auto}
+host_cap=
+if [ "$protect" != 0 ] && [ -d /run/systemd/system ] &&
+	[ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = cgroup2fs ] &&
+	[ "$(docker info --format '{{.CgroupDriver}}' 2>/dev/null)" = systemd ]; then
+	cat >/etc/systemd/system/simplepanel.slice <<SLICE
+# Written by the SimplePanel installer. Every container (apps, databases,
+# SimplePanel and Traefik) runs in this slice, which may use at most
+# ${cap_mb} MB, leaving ${reserve_mb} MB for the system, SSH and Docker.
+[Unit]
+Description=SimplePanel containers
+Before=slices.target
+
+[Slice]
+MemoryAccounting=yes
+MemoryMax=${cap_mb}M
+# Under CPU contention, the system (SSH, Docker) wins over containers.
+CPUWeight=50
+SLICE
+	systemctl daemon-reload
+	current_parent=$(docker info --format '{{.CgroupParent}}' 2>/dev/null || true)
+	# CgroupParent isn't in every Docker version's info; check the config.
+	if grep -q '"cgroup-parent"' /etc/docker/daemon.json 2>/dev/null; then
+		current_parent=simplepanel.slice
+	fi
+	if [ "$current_parent" = simplepanel.slice ]; then
+		# Already set up: the new MemoryMax applies straight away.
+		systemctl set-property --runtime simplepanel.slice "MemoryMax=${cap_mb}M" >/dev/null 2>&1 || true
+		host_cap=$cap_mb
+	else
+		running=$(docker ps -q 2>/dev/null | wc -l)
+		if [ "$protect" = 1 ] || { [ "$protect" = auto ] && [ "$running" -eq 0 ]; }; then
+			if [ ! -s /etc/docker/daemon.json ]; then
+				mkdir -p /etc/docker
+				cat >/etc/docker/daemon.json <<'JSON'
+{
+  "cgroup-parent": "simplepanel.slice",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+JSON
+			elif need python3; then
+				cp /etc/docker/daemon.json /etc/docker/daemon.json.simplepanel-backup
+				python3 - <<'PY'
+import json
+p = "/etc/docker/daemon.json"
+with open(p) as f:
+    cfg = json.load(f)
+cfg["cgroup-parent"] = "simplepanel.slice"
+with open(p, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PY
+			else
+				warn "/etc/docker/daemon.json exists and python3 is missing; add \"cgroup-parent\": \"simplepanel.slice\" to it yourself"
+			fi
+			if grep -q '"cgroup-parent"' /etc/docker/daemon.json 2>/dev/null; then
+				info "Capping containers at ${cap_mb} MB (keeping ${reserve_mb} MB for the system); restarting Docker"
+				systemctl restart docker
+				i=0
+				until timeout 30 docker info >/dev/null 2>&1; do
+					i=$((i + 1))
+					[ "$i" -gt 30 ] && die "Docker did not come back after restarting; check: journalctl -u docker"
+					sleep 2
+				done
+				host_cap=$cap_mb
+			fi
+		else
+			warn "containers are not capped server-wide yet. To protect this server from running out of memory, re-run with SP_PROTECT_HOST=1 (restarts Docker and its containers once)."
+		fi
+	fi
+fi
+
+has_service() { docker service inspect "$1" >/dev/null 2>&1; }
+
+if has_service simplepanel; then
+	existing_install=true
+fi
+
 # ---- Swarm -------------------------------------------------------------------
 
 private_ip() {
@@ -217,7 +351,8 @@ fi
 if docker service inspect simplepanel-traefik >/dev/null 2>&1; then
 	info "Updating Traefik"
 	# shellcheck disable=SC2086
-	docker service update --quiet --detach $traefik_resolve_image --image "$TRAEFIK_IMAGE" --args "$*" simplepanel-traefik >/dev/null
+	docker service update --quiet --detach $traefik_resolve_image --image "$TRAEFIK_IMAGE" --args "$*" \
+		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 simplepanel-traefik >/dev/null
 else
 	info "Starting Traefik"
 	# shellcheck disable=SC2086
@@ -231,11 +366,23 @@ else
 		--mount type=volume,source=simplepanel-traefik-dynamic,target=/etc/traefik/dynamic,readonly \
 		--mount type=volume,source=simplepanel-traefik-certs,target=/certs \
 		--update-order stop-first \
+		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 		--label simplepanel.managed=true \
 		"$TRAEFIK_IMAGE" "$@" >/dev/null
 fi
 
 # ---- SimplePanel -------------------------------------------------------------
+
+# The setup code: until the admin account exists, only someone with this
+# code (printed below) can create it, so nobody else can claim the server.
+new_setup_code() {
+	od -An -N8 -tx1 /dev/urandom | tr -d ' \n' | tr 'a-f' 'A-F' | cut -c1-12
+}
+current_setup_code() {
+	docker service inspect simplepanel --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' 2>/dev/null |
+		sed -n 's/^SP_SETUP_CODE=//p'
+}
+
 
 if [ "$existing_install" = true ]; then
 	info "Upgrading SimplePanel"
@@ -248,8 +395,17 @@ if [ "$existing_install" = true ]; then
 		proc_mount="--mount-add type=bind,source=/proc,target=/host/proc,readonly"
 	fi
 	# shellcheck disable=SC2086
-	docker service update --quiet $sp_resolve_image --image "$SP_IMAGE" $proc_mount \
-		--env-add "SP_ENDPOINT_MODE=$endpoint_mode" --force simplepanel >/dev/null
+	# A panel that was never set up gets a setup code too.
+	setup_env=""
+	if curl -fsS --max-time 5 "http://127.0.0.1:$SP_PORT/api/setup" 2>/dev/null | grep -q '"needsSetup":true' &&
+		[ -z "$(current_setup_code)" ]; then
+		setup_env="--env-add SP_SETUP_CODE=$(new_setup_code)"
+	fi
+	# shellcheck disable=SC2086
+	docker service update --quiet $sp_resolve_image --image "$SP_IMAGE" $proc_mount $setup_env \
+		--env-add "SP_ENDPOINT_MODE=$endpoint_mode" --env-add "SP_MEMORY_CAP_MB=${host_cap:-0}" \
+		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+		--force simplepanel >/dev/null
 else
 	info "Starting SimplePanel"
 	# SimplePanel stops before its replacement starts: SQLite has one writer.
@@ -264,7 +420,10 @@ else
 		--mount type=bind,source=/proc,target=/host/proc,readonly \
 		--mount type=volume,source=simplepanel-traefik-dynamic,target=/etc/traefik/dynamic \
 		--env "SP_ENDPOINT_MODE=$endpoint_mode" \
+		--env "SP_MEMORY_CAP_MB=${host_cap:-0}" \
+		--env "SP_SETUP_CODE=$(new_setup_code)" \
 		--update-order stop-first \
+		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 		--label simplepanel.managed=true \
 		"$SP_IMAGE" >/dev/null
 fi
@@ -287,7 +446,15 @@ printf '  Open  http://%s:%s  to create your admin account.\n' "${public_ip:-<se
 # Ask the panel rather than trusting existing_install: a re-run after an
 # install that never finished still has no admin account.
 if curl -fsS "http://127.0.0.1:$SP_PORT/api/setup" 2>/dev/null | grep -q '"needsSetup":true'; then
-	printf '  Do this now: the first person to open the page claims the server.\n'
+	code=$(current_setup_code)
+	if [ -n "$code" ]; then
+		printf '  Setup code:  \033[1m%s\033[0m  (the page asks for it)\n' "$code"
+	else
+		printf '  Do this now: the first person to open the page claims the server.\n'
+	fi
+fi
+if [ -n "$host_cap" ]; then
+	printf '\n  Memory: containers may use %s MB; %s MB is kept for the system.\n' "$host_cap" "$reserve_mb"
 fi
 printf '\n  Ports 80 and 443 must be reachable for domains and HTTPS.\n'
 printf '  Tip: set a panel domain in Settings, then firewall port %s.\n\n' "$SP_PORT"

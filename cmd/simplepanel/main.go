@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -68,9 +69,13 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	dc := docker.New(sock)
-	if err := dc.Negotiate(ctx); err != nil {
+	// Don't let a hung Docker stop the panel from starting: it serves the
+	// UI and says "Docker is not responding" until Docker answers.
+	nctx, ncancel := context.WithTimeout(ctx, 10*time.Second)
+	defer ncancel()
+	if err := dc.Negotiate(nctx); err != nil {
 		log.Warn("docker not reachable yet; deploys will fail until it is", "err", err)
-	} else if info, err := dc.Info(ctx); err == nil {
+	} else if info, err := dc.Info(nctx); err == nil {
 		log.Info("docker connected", "version", info.ServerVersion, "swarm", info.Swarm.LocalNodeState)
 		if info.Swarm.LocalNodeState != "active" {
 			log.Warn("Docker Swarm is not active; run `docker swarm init` (the installer does this for you)")
@@ -141,10 +146,18 @@ func run(log *slog.Logger) error {
 		}
 		notifier.Send(ev)
 	}
+	watchDocker(dc, notifier)
 	backups := backup.New(st, dm, notifier, log, tmpDir)
 	backups.Start(ctx)
 	mon := monitor.New(monitor.Config{ProcDir: os.Getenv("SP_PROC_DIR"), DiskPath: dataDir}, st, dc, dm, notifier, log)
 	mon.Start(ctx)
+	dm.Capacity = func() deploy.Capacity {
+		mi, err := mon.Memory()
+		if err != nil || mi.Total == 0 {
+			return deploy.Capacity{}
+		}
+		return deploy.NewCapacity(int(mi.Total>>20), deploy.LoadResourceSettings(context.Background(), st))
+	}
 	if err := dm.SyncProxy(ctx); err != nil {
 		log.Warn("could not write proxy config", "err", err)
 	}
@@ -191,4 +204,42 @@ func run(log *slog.Logger) error {
 		_ = hs.Shutdown(sctx)
 	}
 	return nil
+}
+
+// watchDocker sends a notification when Docker has stopped answering for a
+// minute, and another when it answers again. Short hiccups stay quiet.
+func watchDocker(dc *docker.Client, n *notify.Notifier) {
+	var mu sync.Mutex
+	var timer *time.Timer
+	sent := false
+	dc.OnHealthChange(func(h docker.Health) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !h.OK {
+			if timer == nil {
+				timer = time.AfterFunc(time.Minute, func() {
+					if dc.Health().OK {
+						return
+					}
+					mu.Lock()
+					sent = true
+					mu.Unlock()
+					n.Send(notify.Event{Type: notify.DockerDown, Level: "error", Title: "Docker is not responding",
+						Message: "SimplePanel can't reach Docker on this server (" + dc.Health().Error + "). Apps may still be running. " +
+							"This often means the server ran out of memory; SimplePanel keeps retrying and tells you when Docker answers again.",
+						Link: "/#/settings/monitoring"})
+				})
+			}
+			return
+		}
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+		}
+		if sent {
+			sent = false
+			n.Send(notify.Event{Type: notify.DockerRecovered, Level: "success", Title: "Docker is responding again",
+				Message: "SimplePanel is connected to Docker again.", Link: "/#/"})
+		}
+	})
 }

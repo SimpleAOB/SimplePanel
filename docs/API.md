@@ -57,7 +57,17 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Automatic updates | `PUT /api/update/settings {"auto":true,"hour":3}` (`hour` is server time, `-1` for any time) |
 | Registry logins (private images) | `GET /api/registries`; admins: `POST /api/registries {"name","server","username","password"}` (signs in first; add `"skipCheck":true` to skip), `PUT`/`DELETE /api/registries/{id}`, `POST /api/registries/test` |
 | Pick a service's registry login | `PUT /api/apps/{id}` with `"registryId": N` (`0` for none; leave it out to use the only saved login for the image's registry) |
+| Server memory and limits | `GET /api/capacity` (`?app=ID` also returns what the other services are allowed); admins: `PUT /api/capacity/settings {"reserveMb":0,"noAutoLimits":false}` |
+| Memory limit of a service | `"memoryMb"` in `PUT /api/apps/{id}`: `0` automatic (sized to the server), `-1` no limit, or MB (at least 16) |
+| Is Docker answering | `GET /api/docker` (never waits on Docker: `{"ok":false,"since":…,"error":…}` while it isn't) |
 | Saved queries and your history | `GET`/`POST /api/apps/{id}/query/saved`, `DELETE /api/saved-queries/{id}`, `GET /api/apps/{id}/query/history` |
+
+Deploys, starts and restarts are refused with `409 {"code":"memory_pressure"}`
+while the server uses 90% or more of its memory. Owners and admins can add
+`?force=1` to go ahead. Successful responses may carry `"warnings"`.
+
+While Docker isn't answering, service statuses come back as `"unknown"` and
+actions answer `503` straight away instead of hanging.
 
 A deploy returns at once, before the build finishes. Poll
 `GET /api/deployments/{id}` until its status is `succeeded` or `failed`, or

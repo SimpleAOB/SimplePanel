@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -126,13 +128,21 @@ func (s *Server) getSetup(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"needsSetup": n == 0})
+	writeJSON(w, 200, map[string]bool{"needsSetup": n == 0, "needsCode": n == 0 && setupCode() != ""})
 }
 
 type credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Code     string `json:"code"` // setup code, see setupCode
 }
+
+// setupCode is the one-time code the installer prints. Until the admin
+// account exists, anyone who can reach the panel could claim the server
+// (and with it Docker, which is root on the host); the code means only
+// the person who ran the installer can. Installs made before the code
+// existed have none and work as before.
+func setupCode() string { return strings.TrimSpace(os.Getenv("SP_SETUP_CODE")) }
 
 func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 	if !s.loginLimit.Allow("setup:" + clientIP(r)) {
@@ -141,6 +151,10 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
+		return
+	}
+	if want := setupCode(); want != "" && subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(c.Code))), []byte(strings.ToUpper(want))) != 1 {
+		writeErr(w, 403, "wrong setup code; it's in the installer's output")
 		return
 	}
 	c.Username = strings.TrimSpace(strings.ToLower(c.Username))

@@ -31,6 +31,9 @@ type Client struct {
 	http    *http.Client
 	version string
 	socket  string
+
+	h     healthState
+	slots chan struct{} // limits short calls in flight (see health.go)
 }
 
 // ErrNotFound is returned when Docker answers 404.
@@ -54,7 +57,7 @@ func New(socketPath string) *Client {
 		MaxIdleConns:    10,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	return &Client{http: &http.Client{Transport: tr}, version: maxAPIVersion, socket: socketPath}
+	return &Client{http: &http.Client{Transport: tr}, version: maxAPIVersion, socket: socketPath, slots: make(chan struct{}, MaxInFlight)}
 }
 
 // Negotiate picks the lower of the daemon's API version and ours.
@@ -88,6 +91,9 @@ func versionLess(a, b string) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body io.Reader, hdr map[string]string) (*http.Response, error) {
+	if err := c.available(); err != nil {
+		return nil, err
+	}
 	u := "http://docker/v" + c.version + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
@@ -101,6 +107,9 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if unreachable(err) {
+			c.markDown(err)
+		}
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusNotFound {
@@ -127,6 +136,19 @@ func (c *Client) doJSON(ctx context.Context, method, path string, q url.Values, 
 
 // doJSONAuth is doJSON with an optional X-Registry-Auth header.
 func (c *Client) doJSONAuth(ctx context.Context, method, path string, q url.Values, in, out any, registryAuth string) error {
+	if isLong(ctx) {
+		return c.doJSONRaw(ctx, method, path, q, in, out, registryAuth)
+	}
+	cctx, done, err := c.shortCall(ctx)
+	if err != nil {
+		return err
+	}
+	err = c.doJSONRaw(cctx, method, path, q, in, out, registryAuth)
+	done(err)
+	return c.wrapUnavailable(ctx, err)
+}
+
+func (c *Client) doJSONRaw(ctx context.Context, method, path string, q url.Values, in, out any, registryAuth string) error {
 	var body io.Reader
 	hdr := map[string]string{}
 	if registryAuth != "" {
@@ -276,6 +298,9 @@ type BuildOptions struct {
 	// Registries are logins for pulling private base images. Docker sends
 	// each one only to its own registry.
 	Registries []RegistryAuth
+	// MemoryMB caps the memory of the build's containers (0: no cap), so
+	// a hungry build can't take the server down with it.
+	MemoryMB int
 }
 
 // ImageBuild builds an image from a tar build context.
@@ -286,6 +311,11 @@ func (c *Client) ImageBuild(ctx context.Context, tarCtx io.Reader, opt BuildOpti
 	}
 	if opt.Dockerfile != "" {
 		q.Set("dockerfile", opt.Dockerfile)
+	}
+	if opt.MemoryMB > 0 {
+		mem := strconv.FormatInt(int64(opt.MemoryMB)<<20, 10)
+		q.Set("memory", mem)
+		q.Set("memswap", mem) // no swap on top: swapping builds stall the server
 	}
 	if len(opt.BuildArgs) > 0 {
 		b, _ := json.Marshal(opt.BuildArgs)
@@ -502,6 +532,7 @@ func (c *Client) ServiceRemove(ctx context.Context, id string) error {
 // Task is the subset of a Swarm task we show in the UI.
 type Task struct {
 	ID           string
+	ServiceID    string
 	CreatedAt    time.Time
 	Slot         int
 	DesiredState string
@@ -518,6 +549,26 @@ type Task struct {
 	Spec struct {
 		ContainerSpec struct{ Image string }
 	}
+}
+
+// ServicesByLabel lists services carrying label ("key" or "key=value") in
+// one call.
+func (c *Client) ServicesByLabel(ctx context.Context, label string) ([]Service, error) {
+	f, _ := json.Marshal(map[string][]string{"label": {label}})
+	var out []Service
+	err := c.doJSON(ctx, http.MethodGet, "/services", url.Values{"filters": {string(f)}}, nil, &out)
+	return out, err
+}
+
+// TasksOf lists the tasks of several services in one call.
+func (c *Client) TasksOf(ctx context.Context, services []string) ([]Task, error) {
+	if len(services) == 0 {
+		return nil, nil
+	}
+	f, _ := json.Marshal(map[string][]string{"service": services})
+	var tasks []Task
+	err := c.doJSON(ctx, http.MethodGet, "/tasks", url.Values{"filters": {string(f)}}, nil, &tasks)
+	return tasks, err
 }
 
 func (c *Client) ServiceTasks(ctx context.Context, service string) ([]Task, error) {
@@ -553,9 +604,12 @@ func (c *Client) logs(ctx context.Context, path string, tail int, since int64, l
 	if since > 0 {
 		q.Set("since", strconv.FormatInt(since, 10))
 	}
+	// Reading logs is a short call too: don't wait forever on a slow daemon.
+	ctx, cancel := context.WithTimeout(ctx, 2*CallTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodGet, path, q, nil, nil)
 	if err != nil {
-		return "", err
+		return "", c.wrapUnavailable(ctx, err)
 	}
 	defer resp.Body.Close()
 	var buf bytes.Buffer
