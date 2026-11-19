@@ -207,39 +207,65 @@ func run(log *slog.Logger) error {
 }
 
 // watchDocker sends a notification when Docker has stopped answering for a
-// minute, and another when it answers again. Short hiccups stay quiet.
+// minute, and another once it has answered again for a minute. Short
+// hiccups stay quiet, and a daemon that keeps dropping out and coming back
+// still counts as down.
 func watchDocker(dc *docker.Client, n *notify.Notifier) {
 	var mu sync.Mutex
-	var timer *time.Timer
+	var down, stable *time.Timer // down: first failure +1 min; stable: recovery +1 min
 	sent := false
+	var fire func()
+	fire = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		down = nil
+		if sent {
+			return
+		}
+		if dc.Health().OK {
+			if stable != nil { // back, but not for long yet: look again shortly
+				down = time.AfterFunc(30*time.Second, fire)
+			}
+			return
+		}
+		sent = true
+		n.Send(notify.Event{Type: notify.DockerDown, Level: "error", Title: "Docker is not responding",
+			Message: "SimplePanel can't reach Docker on this server (" + dc.Health().Error + "). Apps may still be running. " +
+				"This often means the server ran out of memory; SimplePanel keeps retrying and tells you when Docker answers again.",
+			Link: "/#/settings/monitoring"})
+	}
 	dc.OnHealthChange(func(h docker.Health) {
 		mu.Lock()
 		defer mu.Unlock()
 		if !h.OK {
-			if timer == nil {
-				timer = time.AfterFunc(time.Minute, func() {
-					if dc.Health().OK {
-						return
-					}
-					mu.Lock()
-					sent = true
-					mu.Unlock()
-					n.Send(notify.Event{Type: notify.DockerDown, Level: "error", Title: "Docker is not responding",
-						Message: "SimplePanel can't reach Docker on this server (" + dc.Health().Error + "). Apps may still be running. " +
-							"This often means the server ran out of memory; SimplePanel keeps retrying and tells you when Docker answers again.",
-						Link: "/#/settings/monitoring"})
-				})
+			if stable != nil {
+				stable.Stop()
+				stable = nil
+			}
+			if down == nil && !sent {
+				down = time.AfterFunc(time.Minute, fire)
 			}
 			return
 		}
-		if timer != nil {
-			timer.Stop()
-			timer = nil
+		if (down == nil && !sent) || stable != nil {
+			return
 		}
-		if sent {
-			sent = false
-			n.Send(notify.Event{Type: notify.DockerRecovered, Level: "success", Title: "Docker is responding again",
-				Message: "SimplePanel is connected to Docker again.", Link: "/#/"})
-		}
+		stable = time.AfterFunc(time.Minute, func() {
+			mu.Lock()
+			defer mu.Unlock()
+			stable = nil
+			if !dc.Health().OK {
+				return
+			}
+			if down != nil {
+				down.Stop()
+				down = nil
+			}
+			if sent {
+				sent = false
+				n.Send(notify.Event{Type: notify.DockerRecovered, Level: "success", Title: "Docker is responding again",
+					Message: "SimplePanel is connected to Docker again.", Link: "/#/"})
+			}
+		})
 	})
 }

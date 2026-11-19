@@ -93,7 +93,7 @@ func orEmpty(s, d string) string {
 // enforceHTTPS answers a plain-HTTP request from the internet while HTTPS
 // only is on, and reports whether it did.
 func (s *Server) enforceHTTPS(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path == "/api/health" || privatePeer(r) || !s.httpsOnly(r.Context()) {
+	if r.URL.Path == "/api/health" || strings.HasPrefix(r.URL.Path, "/.well-known/") || privatePeer(r) || !s.httpsOnly(r.Context()) {
 		return false
 	}
 	pd, _ := s.store.Setting(r.Context(), "panel_domain")

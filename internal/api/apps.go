@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -419,7 +420,7 @@ func (in *appInput) apply(a *store.App) error {
 		if deploy.ValidPort(int(p.Published)) != nil || deploy.ValidPort(int(p.Target)) != nil {
 			return errors.New("ports must be between 1 and 65535")
 		}
-		if p.Published == 80 || p.Published == 443 || p.Published == 3000 {
+		if p.Published == 80 || p.Published == 443 || p.Published == 3000 || int(p.Published) == publicPort() {
 			return fmt.Errorf("port %d is used by SimplePanel; use a domain instead", p.Published)
 		}
 		// Swarm's routing mesh takes a published port before the server's
@@ -1165,12 +1166,21 @@ func (s *Server) patchEnv(w http.ResponseWriter, r *http.Request, u *store.User)
 		writeErr(w, 400, err.Error())
 		return
 	}
+	var warn []string
+	if r.URL.Query().Get("deploy") == "1" { // check before saving, so a refusal changes nothing
+		if warn, ok = s.memoryGuard(w, r, u, a); !ok {
+			return
+		}
+	}
 	a.Env = env
 	if err := s.store.UpdateApp(r.Context(), a); err != nil {
 		s.storeErr(w, err)
 		return
 	}
 	out := map[string]any{"keys": envKeys(a.Env)}
+	if len(warn) > 0 {
+		out["warnings"] = warn
+	}
 	if r.URL.Query().Get("deploy") == "1" {
 		d, err := s.deploy.Deploy(r.Context(), a.ID, "env change")
 		if err != nil {
@@ -1180,4 +1190,11 @@ func (s *Server) patchEnv(w http.ResponseWriter, r *http.Request, u *store.User)
 		out["deployment"] = d
 	}
 	writeJSON(w, 200, out)
+}
+
+// publicPort is the port the panel is published on when the installer was
+// given another one than 3000 (SP_PORT), or 0.
+func publicPort() int {
+	n, _ := strconv.Atoi(os.Getenv("SP_PUBLIC_PORT"))
+	return n
 }

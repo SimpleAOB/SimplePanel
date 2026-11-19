@@ -74,7 +74,7 @@
       </div>
       <div class="bar"><span class="fill {level(allowedPct, 150, 250)}" style:width="{Math.min(allowedPct, 100)}%"></span></div>
       <small class="faint">
-        {fmtMB(cap.reserveMb)} is kept for the system (Linux, SSH, Docker). Each service has a memory limit; if it goes
+        {fmtMB(cap.reserveMb)} is kept for the system (Linux, SSH, Docker) and {fmtMB(cap.panelMb)} for SimplePanel itself. Each service has a memory limit; if it goes
         over, only that service restarts.
         {#if allowedPct > 100}
           Limits add up to more than there is, which is fine while services aren't all busy at once.

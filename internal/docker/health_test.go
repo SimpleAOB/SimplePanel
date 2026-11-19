@@ -44,9 +44,9 @@ func fakeDocker(t *testing.T) (*Client, *atomic.Bool, *atomic.Bool) {
 }
 
 func shorten(t *testing.T) {
-	old := [3]time.Duration{CallTimeout, probeStart, maxBackoff}
-	CallTimeout, probeStart, maxBackoff = 200*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond
-	t.Cleanup(func() { CallTimeout, probeStart, maxBackoff = old[0], old[1], old[2] })
+	old := [4]time.Duration{CallTimeout, probeStart, maxBackoff, probeTimeout}
+	CallTimeout, probeStart, maxBackoff, probeTimeout = 200*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { CallTimeout, probeStart, maxBackoff, probeTimeout = old[0], old[1], old[2], old[3] })
 }
 
 func TestHungDockerFailsFastAndRecovers(t *testing.T) {
@@ -120,5 +120,37 @@ func TestCallerCancelDoesNotMarkDown(t *testing.T) {
 	}
 	if !c.Health().OK {
 		t.Fatal("the caller giving up is not Docker being down")
+	}
+}
+
+// A stuck Swarm still answers /_ping. Docker must stay marked down until
+// Swarm calls work again, and cleanup calls must still be sent meanwhile.
+func TestStuckSwarmStaysDown(t *testing.T) {
+	shorten(t)
+	c, hang, _ := fakeDocker(t) // ping keeps working
+	ctx := context.Background()
+	hang.Store(true)
+	if _, err := c.TasksOf(ctx, []string{"x"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("want ErrUnavailable, got %v", err)
+	}
+	time.Sleep(600 * time.Millisecond) // several probes
+	if c.Health().OK {
+		t.Fatal("a working /_ping alone must not count as recovered")
+	}
+	// A cleanup call goes through (and here times out) instead of failing
+	// at once.
+	cctx, cancel := context.WithTimeout(Cleanup(ctx), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.TasksOf(cctx, []string{"x"}); errors.Is(err, ErrUnavailable) && time.Since(start) < 100*time.Millisecond {
+		t.Fatalf("cleanup call was refused straight away: %v", err)
+	}
+	hang.Store(false)
+	deadline := time.Now().Add(2 * time.Second)
+	for !c.Health().OK {
+		if time.Now().After(deadline) {
+			t.Fatal("did not recover once Swarm answered")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

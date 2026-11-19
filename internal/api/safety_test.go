@@ -41,11 +41,12 @@ func TestSetupCode(t *testing.T) {
 }
 
 func TestReservedPorts(t *testing.T) {
+	t.Setenv("SP_PUBLIC_PORT", "8443") // panel installed with SP_PORT=8443
 	ts, c := newTestServer(t)
 	u := ts.URL + "/api"
 	call(t, c, "POST", u+"/setup", `{"username":"admin","password":"longenough1"}`, true)
 	call(t, c, "POST", u+"/projects", `{"name":"shop"}`, true)
-	for _, p := range []string{"22", "2377", "7946", "4789"} {
+	for _, p := range []string{"22", "2377", "7946", "4789", "8443"} {
 		body := `{"name":"x` + p + `","source":"image","image":"nginx","ports":[{"published":` + p + `,"target":80,"protocol":"tcp"}]}`
 		if code, b := call(t, c, "POST", u+"/projects/1/apps", body, true); code != 400 {
 			t.Errorf("publishing port %s: %d %s", p, code, b)
@@ -166,7 +167,7 @@ func TestCapacityOneGig(t *testing.T) {
 	if err := json.Unmarshal([]byte(b), &out); err != nil || !out.Known {
 		t.Fatalf("capacity: %v %s", err, b)
 	}
-	if out.Capacity.AvailableMB != 577 || out.Capacity.Defaults["app"] != 128 {
+	if out.Capacity.AvailableMB != 481 || out.Capacity.Defaults["app"] != 128 {
 		t.Fatalf("capacity: %+v", out.Capacity)
 	}
 	if out.Total != 128+256 || out.Others != 256 {
@@ -196,5 +197,28 @@ func TestMemoryPressureGuard(t *testing.T) {
 	setAvail(500)
 	if code, b := call(t, c, "POST", u+"/apps/1/deploy", "", true); code != 202 {
 		t.Fatalf("deploy with room: %d %s", code, b)
+	}
+}
+
+// Only failed sign-ins count towards the limit, so signing in often (or
+// someone else guessing from elsewhere) never locks the owner out.
+func TestLoginLimitCountsFailures(t *testing.T) {
+	ts, c := newTestServer(t)
+	u := ts.URL + "/api"
+	if code, b := call(t, c, "POST", u+"/setup", `{"username":"admin","password":"longenough1"}`, true); code != 201 {
+		t.Fatalf("setup: %d %s", code, b)
+	}
+	for i := 0; i < 12; i++ {
+		if code, b := call(t, c, "POST", u+"/login", `{"username":"admin","password":"longenough1"}`, true); code != 200 {
+			t.Fatalf("sign-in %d: %d %s", i, code, b)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		if code, _ := call(t, c, "POST", u+"/login", `{"username":"admin","password":"wrong-password"}`, true); code != 401 {
+			t.Fatalf("failure %d: %d", i, code)
+		}
+	}
+	if code, _ := call(t, c, "POST", u+"/login", `{"username":"admin","password":"longenough1"}`, true); code != 429 {
+		t.Fatalf("after 10 failures: %d, want 429", code)
 	}
 }

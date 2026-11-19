@@ -128,18 +128,23 @@ Running out of memory is what usually takes a small server down: Docker and
 Swarm stop answering and even SSH hangs. SimplePanel guards against it:
 
 - **Memory limits sized to your server.** Every service gets an automatic
-  limit (on a 1 GB server: 128 MB for apps, 288 to 512 MB for databases),
+  limit (on a 1 GB server: 128 MB for apps, 256 to 480 MB for databases),
   shown with what the other services use. Pick another size in the
   service's settings. If a service goes over, only that service restarts.
 - **Memory kept for the system.** 15% of RAM (at least 384 MB) is left for
-  Linux, SSH and Docker. The installer caps all containers together below
-  that (a systemd slice), adds a 2 GB swap file when there is none and tunes
-  the kernel to keep memory free. Image builds are capped too.
+  Linux, SSH and Docker, plus about 96 MB for SimplePanel and Traefik. The
+  installer caps all containers together below that (a systemd slice, which
+  may also use at most half that much swap), adds a 2 GB swap file when there
+  is none and tunes the kernel to keep memory free. Image builds are capped
+  too.
 - **Deploys wait when memory is nearly full** (90%), unless an owner or
   admin confirms.
-- **If Docker stops answering**, the panel says so instead of showing empty
-  projects, never piles up requests, reconnects by itself and can notify
-  you.
+- **If Docker stops answering** (or Swarm is stuck while Docker still
+  answers pings), the panel says so instead of showing empty projects, never
+  piles up requests, reconnects by itself and can notify you. Clean-up steps,
+  such as starting an app again after a restore, are still sent and retried.
+- **The panel's own data stays small**: only the last 50 deployments (and
+  their build logs) of each app are kept.
 
 On a server installed before this, re-run the installer with
 `SP_PROTECT_HOST=1` to turn on the server-wide cap (it restarts Docker once).

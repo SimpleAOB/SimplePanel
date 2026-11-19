@@ -19,6 +19,17 @@ const bcryptCost = 12
 // timing doesn't reveal which usernames are valid.
 var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("simplepanel-dummy-password"), bcryptCost)
 
+// bcryptSlots bounds how many password checks run at once. Each takes a
+// few hundred milliseconds of CPU; on a 1-core server a flood of sign-in
+// attempts from many addresses would otherwise starve the apps.
+var bcryptSlots = make(chan struct{}, 2)
+
+func checkPassword(hash []byte, password string) bool {
+	bcryptSlots <- struct{}{}
+	defer func() { <-bcryptSlots }()
+	return bcrypt.CompareHashAndPassword(hash, []byte(password)) == nil
+}
+
 func validPassword(p string) error {
 	if len(p) < 10 {
 		return errors.New("password must be at least 10 characters")
@@ -189,30 +200,32 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	// Only failed attempts count, per address. There is deliberately no
+	// server-wide limit: one would let anyone lock the owner out by
+	// guessing from a few addresses. bcrypt's CPU cost is bounded by
+	// checkPassword instead.
 	ip := clientIP(r)
-	if !s.loginLimit.Allow("login:"+ip) || !s.loginLimit.Allow("login:*global*") {
-		writeErr(w, 429, "too many attempts, try again in a few minutes")
+	if s.loginFails.Blocked("login:" + ip) {
+		writeErr(w, 429, "too many failed attempts, try again in a few minutes")
 		return
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
 		return
 	}
+	fail := func() {
+		s.loginFails.Allow("login:" + ip)
+		s.log.Warn("failed login", "ip", ip)
+		writeErr(w, 401, "wrong username or password")
+	}
 	u, hash, err := s.store.UserByName(r.Context(), strings.TrimSpace(strings.ToLower(c.Username)))
-	if err != nil {
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
-		s.log.Warn("failed login", "ip", ip)
-		writeErr(w, 401, "wrong username or password")
+	if err != nil || hash == "" { // unknown, or invited and hasn't set a password yet
+		checkPassword(dummyHash, c.Password)
+		fail()
 		return
 	}
-	if hash == "" { // invited, hasn't set a password yet
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
-		writeErr(w, 401, "wrong username or password")
-		return
-	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil {
-		s.log.Warn("failed login", "ip", ip)
-		writeErr(w, 401, "wrong username or password")
+	if !checkPassword([]byte(hash), c.Password) {
+		fail()
 		return
 	}
 	if err := s.setSession(w, r, u.ID); err != nil {

@@ -109,7 +109,7 @@
       {:else if over}
         Limits add up to {fmtMB(total)}, a little more than the {fmtMB(avail)} there is. That's normal: services rarely all use their full limit at once, and if memory does run out the biggest one is restarted, not the server.
       {:else}
-        This server has {fmtMB(cap.memTotalMb)} of memory. {fmtMB(cap.reserveMb)} is kept for the system, and services share the other {fmtMB(avail)}. If this one goes over its limit, it's restarted.
+        This server has {fmtMB(cap.memTotalMb)} of memory. {fmtMB(cap.memTotalMb - avail)} is kept for the system and SimplePanel, and services share the other {fmtMB(avail)}. If this one goes over its limit, it's restarted.
       {/if}
     </small>
   </div>

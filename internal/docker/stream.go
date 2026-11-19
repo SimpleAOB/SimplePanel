@@ -22,13 +22,15 @@ import (
 // hijack sends a request that Docker upgrades to a raw bidirectional stream
 // (exec start and container attach). The caller must close the connection.
 func (c *Client) hijack(ctx context.Context, path string, q url.Values, body any) (net.Conn, *bufio.Reader, error) {
-	if err := c.available(); err != nil {
+	if err := c.availableFor(ctx); err != nil {
 		return nil, nil, err
 	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", c.socket)
 	if err != nil {
-		c.markDown(err)
+		if ctx.Err() == nil {
+			c.markDown(err)
+		}
 		return nil, nil, fmt.Errorf("docker: cannot reach daemon: %w", err)
 	}
 	var rd io.Reader = http.NoBody
@@ -181,7 +183,7 @@ func (c *Client) RunContainer(ctx context.Context, opt RunOptions, stdin io.Read
 		return -1, err
 	}
 	defer func() {
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		rctx, cancel := context.WithTimeout(Cleanup(context.WithoutCancel(ctx)), 30*time.Second)
 		defer cancel()
 		_ = c.doJSON(rctx, http.MethodDelete, "/containers/"+created.Id, url.Values{"force": {"1"}, "v": {"0"}}, nil, nil)
 	}()

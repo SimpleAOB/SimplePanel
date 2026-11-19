@@ -91,7 +91,7 @@ func versionLess(a, b string) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body io.Reader, hdr map[string]string) (*http.Response, error) {
-	if err := c.available(); err != nil {
+	if err := c.availableFor(ctx); err != nil {
 		return nil, err
 	}
 	u := "http://docker/v" + c.version + path
@@ -107,7 +107,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if unreachable(err) {
+		if unreachable(err) && ctx.Err() == nil {
 			c.markDown(err)
 		}
 		return nil, err

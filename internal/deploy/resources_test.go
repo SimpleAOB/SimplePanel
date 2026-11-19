@@ -14,10 +14,10 @@ import (
 func TestCapacityOneGigServer(t *testing.T) {
 	// A "1 GB" droplet reports about 960 MB.
 	c := NewCapacity(961, ResourceSettings{})
-	if c.ReserveMB != 384 || c.AvailableMB != 577 {
+	if c.ReserveMB != 384 || c.AvailableMB != 481 {
 		t.Fatalf("reserve %d, available %d", c.ReserveMB, c.AvailableMB)
 	}
-	want := map[string]int{"app": 128, "redis": 128, "postgres": 288, "mariadb": 288, "mysql": 384, "mongo": 512}
+	want := map[string]int{"app": 128, "redis": 128, "postgres": 256, "mariadb": 256, "mysql": 384, "mongo": 480}
 	for k, v := range want {
 		if c.Defaults[k] != v {
 			t.Errorf("%s default = %d, want %d", k, c.Defaults[k], v)
@@ -40,7 +40,7 @@ func TestCapacityBigServers(t *testing.T) {
 		t.Fatalf("reserve should cap at 2 GB, got %d", c.ReserveMB)
 	}
 	c = NewCapacity(2000, ResourceSettings{ReserveMB: 1000})
-	if c.AutoReserve || c.AvailableMB != 1000 {
+	if c.AutoReserve || c.AvailableMB != 1000-PanelOverheadMB {
 		t.Fatalf("manual reserve ignored: %+v", c)
 	}
 }

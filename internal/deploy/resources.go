@@ -57,7 +57,7 @@ func SaveResourceSettings(ctx context.Context, st *store.Store, r ResourceSettin
 	if r.ReserveMB > 0 && r.ReserveMB < 128 {
 		return fmt.Errorf("keep at least 128 MB for the system")
 	}
-	if memTotalMB > 0 && r.ReserveMB > memTotalMB-128 {
+	if memTotalMB > 0 && r.ReserveMB > memTotalMB-PanelOverheadMB-128 {
 		return fmt.Errorf("that leaves less than 128 MB for services; this server has %d MB", memTotalMB)
 	}
 	b, _ := json.Marshal(r)
@@ -69,7 +69,8 @@ type Capacity struct {
 	MemTotalMB  int  `json:"memTotalMb"`  // the server's RAM
 	ReserveMB   int  `json:"reserveMb"`   // kept for the system
 	AutoReserve bool `json:"autoReserve"` // ReserveMB was picked automatically
-	AvailableMB int  `json:"availableMb"` // for services: RAM minus the reserve
+	PanelMB     int  `json:"panelMb"`     // SimplePanel and Traefik themselves
+	AvailableMB int  `json:"availableMb"` // for services: RAM minus the reserve and PanelMB
 	AutoLimits  bool `json:"autoLimits"`  // services without a limit get DefaultMB
 	// Defaults is the automatic limit per kind ("app", "postgres", ...).
 	Defaults map[string]int `json:"defaults"`
@@ -84,13 +85,19 @@ func AutoReserveMB(totalMB int) int {
 	return min(max(totalMB*15/100, 384), 2048)
 }
 
+// PanelOverheadMB is what SimplePanel and Traefik use themselves (about
+// 40 MB each when idle, more while building or serving traffic). They run
+// inside the same server-wide cap as services, so it isn't offered to them.
+const PanelOverheadMB = 96
+
 // NewCapacity works out the capacity of a server with totalMB of RAM.
 func NewCapacity(totalMB int, s ResourceSettings) Capacity {
 	c := Capacity{MemTotalMB: totalMB, ReserveMB: s.ReserveMB, AutoLimits: !s.NoAutoLimits}
 	if c.ReserveMB <= 0 {
 		c.ReserveMB, c.AutoReserve = AutoReserveMB(totalMB), true
 	}
-	c.AvailableMB = max(totalMB-c.ReserveMB, 128)
+	c.PanelMB = PanelOverheadMB
+	c.AvailableMB = max(totalMB-c.ReserveMB-c.PanelMB, 128)
 	c.Defaults = map[string]int{}
 	for _, k := range []string{"app", "postgres", "mysql", "mariadb", "mongo", "redis"} {
 		c.Defaults[k] = c.defaultFor(k)

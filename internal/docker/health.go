@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -108,14 +110,29 @@ func (c *Client) markDown(err error) {
 	}
 }
 
-// probe pings Docker with growing pauses until it answers.
+// probeOK is how many checks in a row must pass before Docker counts as
+// back. One lucky answer from a struggling daemon shouldn't release every
+// waiting request at once.
+const probeOK = 2
+
+// probe checks Docker with growing pauses until it answers.
 func (c *Client) probe() {
 	wait := probeStart
+	ok := 0
 	for {
 		time.Sleep(wait)
 		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-		err := c.ping(ctx)
+		err := c.check(ctx)
 		cancel()
+		if err == nil {
+			ok++
+			if ok < probeOK {
+				wait = probeStart
+				continue
+			}
+		} else {
+			ok = 0
+		}
 		c.h.mu.Lock()
 		c.h.checked = time.Now()
 		if err == nil {
@@ -133,6 +150,29 @@ func (c *Client) probe() {
 	}
 }
 
+// check asks Docker something that goes through Swarm. /_ping alone isn't
+// enough: when Swarm's internal database is stuck, the daemon still answers
+// pings while every service call hangs. Any HTTP answer counts (a node
+// that isn't a Swarm manager answers 503 straight away); only silence or a
+// dead socket fails.
+func (c *Client) check(ctx context.Context) error {
+	if err := c.ping(ctx); err != nil {
+		return err
+	}
+	f := `{"label":["simplepanel.managed"]}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/v"+c.version+"/services?filters="+url.QueryEscape(f), nil)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("Swarm did not answer within %s", probeTimeout)
+		}
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<20))
+	resp.Body.Close()
+	return nil
+}
+
 func (c *Client) ping(ctx context.Context) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/_ping", nil)
 	resp, err := c.http.Do(req)
@@ -144,6 +184,27 @@ func (c *Client) ping(ctx context.Context) error {
 		return fmt.Errorf("ping: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+type cleanupKey struct{}
+
+// Cleanup marks ctx for a call that undoes or finishes earlier work, such
+// as removing a helper container or scaling an app back up after a
+// restore. It is sent even while Docker is marked as not responding (the
+// panel's view may be out of date, and skipping it would leave the server
+// in a half-done state). It still has a timeout.
+func Cleanup(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cleanupKey{}, true)
+}
+
+func isCleanup(ctx context.Context) bool { v, _ := ctx.Value(cleanupKey{}).(bool); return v }
+
+// availableFor is available, except that cleanup calls always go through.
+func (c *Client) availableFor(ctx context.Context) error {
+	if isCleanup(ctx) {
+		return nil
+	}
+	return c.available()
 }
 
 type longKey struct{}
@@ -160,7 +221,7 @@ func isLong(ctx context.Context) bool { v, _ := ctx.Value(longKey{}).(bool); ret
 // the response has been read; it reports a timeout or an unreachable
 // socket as Docker not responding.
 func (c *Client) shortCall(ctx context.Context) (context.Context, func(error), error) {
-	if err := c.available(); err != nil {
+	if err := c.availableFor(ctx); err != nil {
 		return nil, nil, err
 	}
 	cctx, cancel := context.WithTimeout(ctx, CallTimeout)
@@ -181,7 +242,7 @@ func (c *Client) shortCall(ctx context.Context) (context.Context, func(error), e
 		cancel()
 		if timedOut {
 			c.markDown(fmt.Errorf("a request took longer than %s", CallTimeout))
-		} else if unreachable(err) {
+		} else if unreachable(err) && ctx.Err() == nil {
 			c.markDown(err)
 		}
 	}, nil

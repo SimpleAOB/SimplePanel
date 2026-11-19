@@ -176,6 +176,7 @@ reserve_mb=$((mem_total_mb * 15 / 100))
 [ "$reserve_mb" -gt 2048 ] && reserve_mb=2048
 cap_mb=$((mem_total_mb - reserve_mb))
 [ "$cap_mb" -lt 256 ] && cap_mb=256
+swap_cap_mb=$((cap_mb / 2))
 
 if [ "${SP_NO_SWAP:-}" != 1 ] && [ -z "$(swapon --noheadings 2>/dev/null)" ] && [ ! -e /swapfile ]; then
 	free_mb=$(df -Pm / | awk 'NR == 2 {print $4}')
@@ -229,19 +230,21 @@ Before=slices.target
 [Slice]
 MemoryAccounting=yes
 MemoryMax=${cap_mb}M
+# Some swap helps through short peaks; unlimited swap lets busy apps drag
+# the whole server into swapping.
+MemorySwapMax=${swap_cap_mb}M
 # Under CPU contention, the system (SSH, Docker) wins over containers.
 CPUWeight=50
 SLICE
 	systemctl daemon-reload
-	current_parent=$(docker info --format '{{.CgroupParent}}' 2>/dev/null || true)
-	# CgroupParent isn't in every Docker version's info; check the config.
-	if grep -q '"cgroup-parent"' /etc/docker/daemon.json 2>/dev/null; then
-		current_parent=simplepanel.slice
-	fi
+	# CgroupParent isn't in every Docker version's info; read the config.
+	current_parent=$(sed -n 's/.*"cgroup-parent"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /etc/docker/daemon.json 2>/dev/null | head -n 1)
 	if [ "$current_parent" = simplepanel.slice ]; then
-		# Already set up: the new MemoryMax applies straight away.
-		systemctl set-property --runtime simplepanel.slice "MemoryMax=${cap_mb}M" >/dev/null 2>&1 || true
+		# Already set up: the new limits apply straight away.
+		systemctl set-property --runtime simplepanel.slice "MemoryMax=${cap_mb}M" "MemorySwapMax=${swap_cap_mb}M" >/dev/null 2>&1 || true
 		host_cap=$cap_mb
+	elif [ -n "$current_parent" ]; then
+		warn "/etc/docker/daemon.json already puts containers in \"$current_parent\"; leaving it alone, so containers are not capped server-wide"
 	else
 		running=$(docker ps -q 2>/dev/null | wc -l)
 		if [ "$protect" = 1 ] || { [ "$protect" = auto ] && [ "$running" -eq 0 ]; }; then
@@ -269,7 +272,7 @@ PY
 			else
 				warn "/etc/docker/daemon.json exists and python3 is missing; add \"cgroup-parent\": \"simplepanel.slice\" to it yourself"
 			fi
-			if grep -q '"cgroup-parent"' /etc/docker/daemon.json 2>/dev/null; then
+			if grep -q '"cgroup-parent"[[:space:]]*:[[:space:]]*"simplepanel.slice"' /etc/docker/daemon.json 2>/dev/null; then
 				info "Capping containers at ${cap_mb} MB (keeping ${reserve_mb} MB for the system); restarting Docker"
 				systemctl restart docker
 				i=0
@@ -404,6 +407,7 @@ if [ "$existing_install" = true ]; then
 	# shellcheck disable=SC2086
 	docker service update --quiet $sp_resolve_image --image "$SP_IMAGE" $proc_mount $setup_env \
 		--env-add "SP_ENDPOINT_MODE=$endpoint_mode" --env-add "SP_MEMORY_CAP_MB=${host_cap:-0}" \
+		--env-add "SP_PUBLIC_PORT=$SP_PORT" \
 		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 		--force simplepanel >/dev/null
 else
@@ -421,6 +425,7 @@ else
 		--mount type=volume,source=simplepanel-traefik-dynamic,target=/etc/traefik/dynamic \
 		--env "SP_ENDPOINT_MODE=$endpoint_mode" \
 		--env "SP_MEMORY_CAP_MB=${host_cap:-0}" \
+		--env "SP_PUBLIC_PORT=$SP_PORT" \
 		--env "SP_SETUP_CODE=$(new_setup_code)" \
 		--update-order stop-first \
 		--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \

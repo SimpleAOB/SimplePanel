@@ -52,6 +52,8 @@ type Manager struct {
 	runsMu   sync.Mutex // serialises launch bookkeeping (see runs.go)
 	snapMu   sync.Mutex
 	snap     *swarmSnapshot
+	snapGen  int         // bumped by InvalidateStatus
+	snapNext *snapFlight // the read in progress, if any
 
 	// OnDeploy, if set, is called when a deployment finishes.
 	OnDeploy func(app *store.App, d *store.Deployment)
@@ -741,12 +743,40 @@ type swarmSnapshot struct {
 
 const snapshotTTL = 2 * time.Second
 
+// snapFlight is one read of Swarm that every caller asking meanwhile waits
+// for, each only as long as it wants to.
+type snapFlight struct {
+	done chan struct{}
+	s    *swarmSnapshot
+	gen  int
+}
+
 func (m *Manager) snapshot(ctx context.Context) *swarmSnapshot {
 	m.snapMu.Lock()
-	defer m.snapMu.Unlock()
 	if s := m.snap; s != nil && time.Since(s.at) < snapshotTTL {
+		m.snapMu.Unlock()
 		return s
 	}
+	f := m.snapNext
+	if f == nil || f.gen != m.snapGen { // none, or started before a change
+		f = &snapFlight{done: make(chan struct{}), gen: m.snapGen}
+		m.snapNext = f
+		go m.readSwarm(f)
+	}
+	m.snapMu.Unlock()
+	select {
+	case <-f.done:
+		return f.s
+	case <-ctx.Done():
+		return &swarmSnapshot{err: ctx.Err(), at: time.Now()}
+	}
+}
+
+// readSwarm reads every SimplePanel service and its tasks. It doesn't use
+// a caller's context, so one page closing doesn't fail the read for the
+// others; the Docker client's own timeout bounds it.
+func (m *Manager) readSwarm(f *snapFlight) {
+	ctx := context.Background()
 	s := &swarmSnapshot{services: map[string]*docker.Service{}, tasks: map[string][]docker.Task{}}
 	svcs, err := m.docker.ServicesByLabel(ctx, "simplepanel.managed")
 	if err == nil {
@@ -762,11 +792,16 @@ func (m *Manager) snapshot(ctx context.Context) *swarmSnapshot {
 		}
 	}
 	s.err, s.at = err, time.Now()
-	if ctx.Err() != nil { // the caller gave up: don't cache its failure
-		return s
+	m.snapMu.Lock()
+	if m.snapGen == f.gen { // nothing changed while reading
+		m.snap = s
 	}
-	m.snap = s
-	return s
+	if m.snapNext == f {
+		m.snapNext = nil
+	}
+	m.snapMu.Unlock()
+	f.s = s
+	close(f.done)
 }
 
 // Statuses reports the state of several apps, keyed by app ID.
@@ -830,6 +865,7 @@ func taskStatus(svc *docker.Service, tasks []docker.Task) Status {
 func (m *Manager) InvalidateStatus() {
 	m.snapMu.Lock()
 	m.snap = nil
+	m.snapGen++
 	m.snapMu.Unlock()
 }
 
