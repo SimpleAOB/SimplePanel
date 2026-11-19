@@ -307,6 +307,12 @@ func (m *Manager) detectPort(ctx context.Context, app *store.App, image string, 
 			lb.Printf("Warning: %s sends visitors to port %d, but the image listens on %s. If the site doesn't load, change the domain's port on the app's Overview.", d.Host, d.Port, strings.Join(list, ", "))
 		}
 	}
+	if app.HTTPPort == 0 && p == 0 {
+		base, _ := m.store.Setting(ctx, "wildcard_domain")
+		if h := AutoHost(app, base); h != "" {
+			lb.Printf("Note: the image doesn't say which port it listens on, so %s goes to port 80. If the site doesn't load, change its port on the app's Overview.", h)
+		}
+	}
 }
 
 // RegistryAuth returns the registry login an image app pulls with, or nil
@@ -508,9 +514,17 @@ func (m *Manager) autoDetect(app *store.App, ctxDir, dockerfile string, lb *logB
 			m.log.Warn("saving detected build settings", "app", app.ServiceName(), "err", err)
 		}
 	default:
+		if !fileExists(filepath.Join(ctxDir, "index.html")) && !fileExists(filepath.Join(ctxDir, "index.htm")) {
+			return fmt.Errorf("no Dockerfile and no index.html found in the repository, so there is nothing to serve. Check the repository and build path, or add a Dockerfile (examples: %s)", DockerfileHelpURL)
+		}
 		lb.Printf("No %s found: serving the files as a static website", dockerfile)
 	}
 	return nil
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 func orDefault(s, d string) string {

@@ -105,7 +105,7 @@
   Overview
   {#snippet actions()}
     {#if isAdmin()}
-      <button class="btn" onclick={() => (importing = true)}>Import<span class="wide"> project</span></button>
+      <button class="btn" onclick={() => (importing = true)}><span>Import<span class="wide"> project</span></span></button>
       <button class="btn primary" onclick={() => { newOpen = true; }}>New project</button>
     {/if}
   {/snippet}
@@ -131,7 +131,7 @@
             <span class="num">{st.done ? '✓' : i + 1}</span>
             <div class="body">
               <strong>{st.title}</strong>
-              {#if !st.done}<span class="muted">{st.text}</span>{/if}
+              {#if !st.done && !(st.key === 'backups' && hasBackups)}<span class="muted">{st.text}</span>{/if}
               {#if next === st.key}
                 {#if st.key === 'project'}
                   <form class="row" onsubmit={createProject}>
@@ -154,6 +154,11 @@
                 {/if}
               {:else if !st.done && st.key === 'domain'}
                 <div><a class="linkish" href="#/settings">Set a panel domain</a></div>
+              {:else if !st.done && st.key === 'backups' && hasBackups}
+                <span>
+                  Destination added. {unscheduled.length === 1 ? 'This database has' : 'These databases have'} no backup schedule yet:
+                  {#each unscheduled as d, j (d.id)}{j ? ', ' : ''}<a href="#/p/{d.pid}/a/{d.id}/backups">{d.name}</a>{/each}.
+                </span>
               {:else if !st.done && st.key === 'backups'}
                 <div><a class="linkish" href="#/settings/backups">Add a backup destination</a></div>
               {/if}

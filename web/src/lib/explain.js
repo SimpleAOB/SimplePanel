@@ -25,6 +25,9 @@ export function explainFailure(reason = '') {
       hint: cap(reason.split(' (')[0]) + '. Apps that run a server are built from a Dockerfile in the repository.',
     };
   }
+  if (r.includes('no index.html')) {
+    return { kind: 'no-dockerfile', title: 'Nothing to serve', hint: 'The repository has no Dockerfile and no index.html. Check the repository URL and the build path, or add a Dockerfile.' };
+  }
   if (r.includes('no dockerfile') || (r.includes('no ') && r.includes('found in'))) {
     return { kind: 'no-dockerfile', title: 'No Dockerfile in the repository', hint: 'Add a Dockerfile, or set the build type to Static site in the Settings tab if this is a website of plain files.' };
   }
@@ -36,6 +39,13 @@ export function explainFailure(reason = '') {
   }
   if (r.startsWith('pull ') && (r.includes('denied') || r.includes('unauthorized') || r.includes('authentication'))) {
     return { kind: 'registry', title: 'The registry refused to send the image', hint: 'If the image is private, add a login under Settings › Registries and pick it in the app’s settings.' };
+  }
+  if (r.includes('keeps failing to start') || r.includes('failed to start and swarm rolled back')) {
+    return {
+      kind: 'crash',
+      title: 'The app crashes when it starts',
+      hint: 'These are the last lines it printed before it stopped. A missing setting in the Environment tab, such as a database URL, is the usual cause.',
+    };
   }
   if (r.startsWith('build:')) {
     return { kind: 'build', title: 'The build failed', hint: 'These are the last lines the build printed. The error is usually among them; the full build log has the rest.' };

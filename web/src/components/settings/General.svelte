@@ -20,7 +20,9 @@
     wildcard = s.wildcardDomain || '';
     savedPanel = panelDomain;
     savedWildcard = wildcard;
-    ip = s.serverIp || location.hostname;
+    // Only an IP address is useful here; a hostname or localhost isn't.
+    const h = location.hostname;
+    ip = s.serverIp || (/^[\d.]+$|:/.test(h) && h !== '127.0.0.1' ? h : '');
   });
 
   // A public IPv4 address can use sslip.io, a free DNS service where

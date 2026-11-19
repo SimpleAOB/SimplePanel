@@ -4,7 +4,7 @@
   // deploy on push, pull request previews, the webhook URL and deploy key.
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, go, timeAgo } from '../lib/state.svelte.js';
+  import { ui, go, timeAgo, isAdmin } from '../lib/state.svelte.js';
   import { formFromApp, payload } from '../lib/appform.js';
   import Icon from './Icon.svelte';
 
@@ -160,6 +160,20 @@
     </ul>
   {/if}
 
+  {#if !linked && canDeploy}
+    <div class="field">
+      <span>Deploy on every push</span>
+      <div class="row tight">
+        <input type="text" readonly value={webhook} class="mono" aria-label="Webhook URL" />
+        <button class="btn" onclick={() => copy(webhook, 'hook')}>{copied === 'hook' ? 'Copied' : 'Copy'}</button>
+        <button class="btn" disabled={!!busy} onclick={onrotate}>Regenerate</button>
+      </div>
+      <small class="faint">
+        {#if isAdmin()}<a href="#/settings/git">Connect GitHub or GitLab</a> to set this up for you, or paste{:else}Paste{/if} this webhook URL into the repository's webhook settings (GitHub: content type <code>application/json</code>, push and pull request events) or POST to it from CI. Keep it secret.
+      </small>
+    </div>
+  {/if}
+
   {#if ui.advanced && canDeploy}
     {#if app.previews}
       <div class="field">
@@ -173,18 +187,6 @@
     {/if}
 
     {#if !linked}
-      <div class="field">
-        <span>Deploy webhook</span>
-        <div class="row tight">
-          <input type="text" readonly value={webhook} class="mono" aria-label="Webhook URL" />
-          <button class="btn" onclick={() => copy(webhook, 'hook')}>{copied === 'hook' ? 'Copied' : 'Copy'}</button>
-          <button class="btn" disabled={!!busy} onclick={onrotate}>Regenerate</button>
-        </div>
-        <small class="faint">
-          Paste it into the repository's webhook settings (GitHub: content type <code>application/json</code>, push and pull request events) or POST to it from CI. Keep it secret.
-        </small>
-      </div>
-
       <div class="field">
         <span>Deploy key</span>
         {#if app.deployKeyPub}

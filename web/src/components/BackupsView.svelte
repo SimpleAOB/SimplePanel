@@ -507,7 +507,8 @@
     flex-wrap: wrap;
   }
   .grow {
-    flex: 1;
+    /* On a phone the buttons wrap below instead of squeezing the date. */
+    flex: 1 1 220px;
     min-width: 0;
   }
   .link {

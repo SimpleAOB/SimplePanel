@@ -4,6 +4,7 @@
   import { api } from '../lib/api.js';
   import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon, isAdmin, depLabel, depDot, setLeaveGuard } from '../lib/state.svelte.js';
   import { explainFailure, DOCKERFILE_HELP } from '../lib/explain.js';
+  import { parseLog } from '../lib/logs.js';
   import DomainStatus from './DomainStatus.svelte';
   import { formFromApp, payload, withDbUrl } from '../lib/appform.js';
   import Topbar from './Topbar.svelte';
@@ -164,6 +165,7 @@
 
   let autoBusy = $state(false);
   let autoPort = $state(0);
+  let autoEdit = $state(false);
 
   async function setAuto(on, port) {
     autoBusy = true;
@@ -187,7 +189,10 @@
       // An app that isn't up yet has no app logs: show its deploy instead.
       // On a phone the panel would cover the page, which already says what
       // went wrong, so leave it closed there.
-      if (first && d.lastDeployment && ['deploy_failed', 'deploying'].includes(d.status?.state) && window.innerWidth > 1100) showDeployment(d.lastDeployment.id);
+      if (first && d.lastDeployment && ['deploy_failed', 'deploying'].includes(d.status?.state) && window.innerWidth > 1100) {
+        if (explainFailure(d.lastDeployment.reason || '').kind === 'crash') crashLogs();
+        else showDeployment(d.lastDeployment.id);
+      } else if (first && d.status?.state === 'failing' && window.innerWidth > 1100) crashLogs();
       if (resetForm || !form) {
         form = formFromApp(d.app);
         env = d.app.env;
@@ -331,6 +336,29 @@
     return reveal ? s : '•'.repeat(Math.min(s?.length || 0, 16));
   }
 
+  // When the app crashes on start, show what the last crash printed.
+  let crashing = $derived(failure?.kind === 'crash' || (!failed && detail?.status?.state === 'failing'));
+  let crash = $state(null); // { number, lines }
+  let crashFor = '';
+  $effect(() => {
+    const key = crashing ? `${aid}:${failed?.id || 0}:${detail?.status?.message || ''}` : '';
+    if (key === crashFor) return;
+    crashFor = key;
+    crash = null;
+    if (key) loadCrash();
+  });
+  async function loadCrash() {
+    try {
+      const r = await api.get(`/apps/${aid}/runs`);
+      const run = r.runs.find((x) => x.state === 'failed' || x.state === 'rejected');
+      if (!run) return;
+      const l = await api.get(`/apps/${aid}/logs?tail=15&run=${run.number}`);
+      crash = { number: run.number, lines: parseLog(l.logs).map((x) => x.text) };
+    } catch {
+      /* the card still links to the logs */
+    }
+  }
+
   // Opens the logs panel on the newest launch that crashed.
   async function crashLogs() {
     try {
@@ -375,13 +403,23 @@
       <section class="card failure" role="alert">
         <div class="row between">
           <h3>{failure.title}</h3>
-          <button class="btn small" onclick={() => showDeployment(failed.id)}>Show build log</button>
+          {#if failure.kind === 'crash'}
+            <button class="btn small" onclick={crashLogs}>Show app logs</button>
+          {:else}
+            <button class="btn small" onclick={() => showDeployment(failed.id)}>Show build log</button>
+          {/if}
         </div>
         <p class="muted">{failure.hint}</p>
         {#if detail.status.state === 'running'}
           <small class="faint">The previous version is still running, so visitors don't notice.</small>
         {/if}
         {#if canDeploy && failure.kind === 'git-auth'}
+          {#if detail.app.gitUrl}
+            <p class="repo">
+              Repository: <code>{detail.app.gitUrl}</code>
+              <a class="btn ghost small" href="#/p/{pid}/a/{aid}/settings">Fix the URL</a>
+            </p>
+          {/if}
           <div class="row fix">
             {#if isAdmin()}<a class="btn" href="#/settings/git">Connect GitHub or GitLab</a>{/if}
             <form class="row tight tokenform" onsubmit={saveToken}>
@@ -405,16 +443,26 @@
         {:else if failure.kind === 'registry' && isAdmin()}
           <div class="row fix"><a class="btn" href="#/settings/registries">Add a registry login</a></div>
         {/if}
-        {#if failed.tail?.length && !['git-auth', 'server-app', 'image'].includes(failure.kind)}
+        {#if failure.kind === 'crash'}
+          {#if crash?.lines.length}
+            <pre class="tail" use:scrollEnd={crash.lines}>{crash.lines.join('\n')}</pre>
+          {:else if crash}
+            <small class="faint">It stopped without printing anything.</small>
+          {/if}
+          {#if canDeploy}<div class="row fix"><a class="btn" href="#/p/{pid}/a/{aid}/environment">Open Environment</a></div>{/if}
+        {:else if failed.tail?.length && !['git-auth', 'server-app', 'image'].includes(failure.kind)}
           <pre class="tail" use:scrollEnd={failed.tail}>{failed.tail.join('\n')}</pre>
         {/if}
       </section>
-    {/if}
-    {#if detail.status.message && detail.status.state === 'failing'}
-      <p class="error">
-        The app is failing to start: {detail.status.message}
-        <button class="linkish" onclick={crashLogs}>See what the last crash logged</button>
-      </p>
+    {:else if crashing && !isPreview}
+      <section class="card failure" role="alert">
+        <div class="row between">
+          <h3>The app keeps crashing</h3>
+          <button class="btn small" onclick={crashLogs}>Show app logs</button>
+        </div>
+        <p class="muted">It stops soon after it starts ({detail.status.message}). These are the last lines it printed. A missing setting in the Environment tab is the usual cause.</p>
+        {#if crash?.lines.length}<pre class="tail" use:scrollEnd={crash.lines}>{crash.lines.join('\n')}</pre>{/if}
+      </section>
     {/if}
 
     {#if isPreview}
@@ -557,19 +605,27 @@
               <span class="faint">Automatic subdomain is off</span>
             {/if}
             {#if canDeploy}
-              <button class="btn ghost small" disabled={autoBusy} onclick={() => setAuto(!detail.app.autoDomain, detail.app.httpPort)}>{detail.app.autoDomain ? 'Turn off' : 'Turn on'}</button>
+              <span class="acts">
+                {#if detail.app.autoDomain && !autoEdit}<button class="btn ghost small" onclick={() => { autoEdit = true; autoPort = detail.app.httpPort || ''; }}>Change port</button>{/if}
+                <button class="btn ghost small" disabled={autoBusy} onclick={() => setAuto(!detail.app.autoDomain, detail.app.httpPort)}>{detail.app.autoDomain ? 'Turn off' : 'Turn on'}</button>
+              </span>
             {/if}
           </div>
-          {#if ui.advanced && canDeploy && detail.app.autoDomain}
-            <form class="row" onsubmit={(e) => { e.preventDefault(); setAuto(true, autoPort); }}>
+          {#if canDeploy && detail.app.autoDomain && autoEdit}
+            <form class="row" onsubmit={async (e) => { e.preventDefault(); await setAuto(true, autoPort); autoEdit = false; }}>
               <label class="field port">
-                <span>Automatic subdomain port</span>
-                <input type="number" min="0" max="65535" bind:value={autoPort} placeholder={String(detail.autoPort)} />
+                <span>App port</span>
+                <input type="number" min="0" max="65535" bind:value={autoPort} placeholder="auto ({detail.autoPort})" />
               </label>
-              <button class="btn" disabled={autoBusy}>Set port</button>
-              <small class="faint">0 uses the port of the first domain below, or 80.</small>
+              <button class="btn primary" disabled={autoBusy}>Save</button>
+              <button type="button" class="btn ghost" onclick={() => (autoEdit = false)}>Cancel</button>
+              <small class="faint">Leave empty to use the port the image declares, or 80.</small>
             </form>
           {/if}
+          {#if detail.app.autoDomain && !detail.app.httpPort && !detail.app.imagePort && !detail.domains.length && detail.lastDeployment?.status === 'succeeded'}
+            <p class="warn">The image doesn't say which port it listens on, so this address goes to port 80. If the site doesn't load, change the port.</p>
+          {/if}
+          {#if detail.autoHost}<DomainStatus host={detail.autoHost} {serverIp} />{/if}
         {/if}
         {#if detail.domains.length === 0 && !detail.autoHost}
           <p class="muted">
@@ -932,9 +988,6 @@
     font-weight: var(--sp-weight-medium);
     overflow-wrap: anywhere;
   }
-  .auto .btn {
-    margin-left: auto;
-  }
   .danger-zone {
     border-color: var(--sp-danger);
   }
@@ -1044,5 +1097,13 @@
     .acts {
       margin-left: 0;
     }
+  }
+  .repo {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-space-2);
+    overflow-wrap: anywhere;
   }
 </style>

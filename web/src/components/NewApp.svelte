@@ -24,6 +24,20 @@
     }
   }
 
+  // With one database, connect it straight away; with more, let them pick.
+  async function connectDb() {
+    envOpen = true;
+    if (projectDbs.length !== 1) {
+      setTimeout(() => document.querySelector('select.insert')?.focus());
+      return;
+    }
+    try {
+      form.env = await withDbUrl(form.env, projectDbs[0].id);
+    } catch (err) {
+      envErr = err.message;
+    }
+  }
+
   const draftKey = `sp-newapp-${ui.route.projectId}`;
   function loadDraft() {
     try {
@@ -132,7 +146,8 @@
         await submitDatabase();
         return;
       }
-      const app = await api.post(`/projects/${pid}/apps`, payload({ ...form, name: appSlug }));
+      // The port also sets the automatic subdomain's port.
+      const app = await api.post(`/projects/${pid}/apps`, { ...payload({ ...form, name: appSlug }), ...(Number(port) > 0 ? { httpPort: Number(port) } : {}) });
       if (domain.trim()) {
         try {
           await api.post(`/apps/${app.id}/domains`, { host: domain.trim().toLowerCase(), port: Number(port) || 0, https: true });
@@ -196,7 +211,7 @@
       <label class="field">
         <span>Password <span class="opt">(optional)</span></span>
         <div class="pw">
-          <input type={showPw ? 'text' : 'password'} bind:value={dbPassword} placeholder="Leave empty to generate" autocomplete="new-password" maxlength="128" />
+          <input type={showPw ? 'text' : 'password'} bind:value={dbPassword} placeholder="Generated if empty" autocomplete="new-password" maxlength="128" />
           <button type="button" class="btn ghost icon small" aria-label={showPw ? 'Hide password' : 'Show password'} title={showPw ? 'Hide password' : 'Show password'} onclick={() => (showPw = !showPw)}><Icon name="eye" size={16} /></button>
         </div>
       </label>
@@ -238,7 +253,7 @@
       {/if}
       {#if envErr}<p class="error">{envErr}</p>{/if}
     {:else}
-      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length} <button type="button" class="btn small" onclick={() => (envOpen = true)}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
+      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length} <button type="button" class="btn small" onclick={connectDb}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
     {/if}
   </div>
 

@@ -41,6 +41,15 @@
     return () => clearInterval(t);
   });
 
+  // A new page starts at the top; switching an app's tabs keeps the place.
+  let mainEl = $state();
+  let pageKey = $derived(`${ui.route.view}|${ui.route.projectId}|${ui.route.appId}|${ui.route.view === 'app' ? '' : ui.route.tab || ui.route.section || ''}`);
+  $effect(() => {
+    pageKey;
+    if (mainEl) mainEl.scrollTop = 0;
+    window.scrollTo(0, 0);
+  });
+
   let showPanel = $derived(ui.route.view === 'app' && ui.panelOpen);
 </script>
 
@@ -57,7 +66,7 @@
   {#if ui.navOpen}
     <button class="scrim" aria-label="Close menu" onclick={() => (ui.navOpen = false)}></button>
   {/if}
-  <main class="main">
+  <main class="main" bind:this={mainEl}>
     <UpdateBanner />
     {#if ui.route.view === 'home'}
       <Home />
