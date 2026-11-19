@@ -78,6 +78,12 @@ fi
 
 timeout 60 docker info >/dev/null 2>&1 || die "Docker is installed but not running or not responding (try: systemctl restart docker)"
 
+has_service() { docker service inspect "$1" >/dev/null 2>&1; }
+
+if has_service simplepanel; then
+	existing_install=true
+fi
+
 # Ports must be free, except those held by SimplePanel's own services: an
 # upgrade, or a re-run after an install that stopped half way, already
 # owns them.
@@ -287,12 +293,6 @@ PY
 			warn "containers are not capped server-wide yet. To protect this server from running out of memory, re-run with SP_PROTECT_HOST=1 (restarts Docker and its containers once)."
 		fi
 	fi
-fi
-
-has_service() { docker service inspect "$1" >/dev/null 2>&1; }
-
-if has_service simplepanel; then
-	existing_install=true
 fi
 
 # ---- Swarm -------------------------------------------------------------------
