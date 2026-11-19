@@ -142,6 +142,23 @@ Base images are refreshed on every build for security updates. If the
 registry refuses (for example a Docker Hub rate limit), the build is retried
 with the images already on the server.
 
+### Private registries
+Owners and admins save registry logins (username + access token) under
+Settings > Registries; Docker's `/auth` endpoint checks each one before it is
+saved. An image app uses the login for its image's registry: the deploy pulls
+with `X-Registry-Auth`, and the same header on service create/update makes
+Swarm hand the login to every node that runs a task, so other nodes and
+rescheduled tasks can pull too. Restarts and scaling send no header, which
+keeps the service's login; a deploy without a login sends `{}`, which clears
+it. A login is only ever sent to its own registry: the API refuses a login
+whose registry differs from the image's, and the deployer checks again. Git
+builds pass all saved logins (one per registry) as `X-Registry-Config` for
+private base images. Tokens are write-only: never in API responses, exports
+(which only name the registry host) or deployment logs (masked). GHCR needs
+a classic personal access token with `read:packages`; GitHub App tokens
+can't pull from GHCR and expire after an hour, so the Git integration is not
+reused for it.
+
 Automatic builds for server apps without a Dockerfile (Nixpacks or
 buildpacks) are planned.
 

@@ -1,8 +1,10 @@
 <script>
   // Source + runtime fields for an app. `value` is a plain object bound
   // by the parent. Advanced fields only show when Advanced view is on.
-  import { ui, setAdvanced } from '../lib/state.svelte.js';
+  import { onMount } from 'svelte';
+  import { ui, setAdvanced, isAdmin } from '../lib/state.svelte.js';
   import { applyStaticPreset } from '../lib/staticpresets.js';
+  import { loadRegistries, registryHost } from '../lib/registries.js';
   import Icon from './Icon.svelte';
   import StaticSiteHelp from './StaticSiteHelp.svelte';
   import RepoPicker from './RepoPicker.svelte';
@@ -10,6 +12,31 @@
   let { value = $bindable(), hasToken = false, showRuntime = true, database = false } = $props();
 
   let helpOpen = $state(false);
+
+  // Registry logins for private images. The login follows the image's
+  // registry: change the image to another registry and the matching login
+  // (or none) is picked, so a login is never sent to the wrong place.
+  let registries = $state(null);
+  onMount(() => {
+    loadRegistries()
+      .then((r) => (registries = r))
+      .catch(() => (registries = []));
+  });
+  let host = $derived(registryHost(value.image));
+  let matching = $derived((registries || []).filter((r) => r.server === host));
+  let lastHost = registryHost(value.image);
+  $effect(() => {
+    if (value.source !== 'image' || database || registries === null) return;
+    const h = host;
+    const cur = registries.find((r) => r.id === value.registryId);
+    const fits = cur && cur.server === h;
+    if (value.registryId === null || (value.registryId && !fits) || (!value.registryId && h !== lastHost)) {
+      const next = matching.length ? matching[0].id : 0;
+      if (value.registryId !== next) value.registryId = next;
+    }
+    lastHost = h;
+  });
+  let imageTyped = $derived(/[/:]/.test(value.image || '') || (value.image || '').length > 3);
 
   // Fill the build fields from a preset, and show them so the user can check.
   function usePreset(preset) {
@@ -41,8 +68,29 @@
     <label class="field">
       <span>Image</span>
       <input type="text" bind:value={value.image} placeholder="nginx:latest or ghcr.io/user/app:tag" required />
-      <small>{database ? 'Change the tag to switch versions. Major upgrades may need a manual data migration.' : 'Public images from Docker Hub, GHCR or any registry.'}</small>
+      <small>{database ? 'Change the tag to switch versions. Major upgrades may need a manual data migration.' : 'Public or private images from Docker Hub, GHCR or any registry.'}</small>
     </label>
+    {#if !database && imageTyped}
+      {#if matching.length}
+        <label class="field">
+          <span class="with-icon"><Icon name="lock" size={14} /> Registry login</span>
+          <select bind:value={value.registryId}>
+            {#each matching as r (r.id)}
+              <option value={r.id}>{r.name}</option>
+            {/each}
+            <option value={0}>None (public image)</option>
+          </select>
+          <small>
+            {#if value.registryId}Every server signs in to <span class="mono">{host}</span> with this login to pull the image.{:else}Pulls from <span class="mono">{host}</span> without signing in.{/if}
+          </small>
+        </label>
+      {:else if registries !== null}
+        <small class="hint">
+          Private image?
+          {#if isAdmin()}<a href="#/settings/registries">Add a login for <span class="mono">{host}</span></a> under Settings › Registries.{:else}Ask an admin to add a login for <span class="mono">{host}</span> under Settings › Registries.{/if}
+        </small>
+      {/if}
+    {/if}
   {:else}
     <RepoPicker bind:value />
     <div class="field">
@@ -249,5 +297,15 @@
     align-items: center;
     font-size: var(--sp-text-sm);
     color: var(--sp-text-muted);
+  }
+  .with-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-space-1);
+  }
+  .hint {
+    margin-top: calc(-1 * var(--sp-space-2));
+    color: var(--sp-text-muted);
+    font-size: var(--sp-text-sm);
   }
 </style>

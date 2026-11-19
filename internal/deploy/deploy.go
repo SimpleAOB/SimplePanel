@@ -166,9 +166,16 @@ func (m *Manager) run(appID, depID int64) {
 		if app.IsPreview() {
 			lb.Printf("Preview of pull request #%d: %s", app.PRNumber, app.PRTitle)
 		}
+		var auth *docker.RegistryAuth
 		switch app.Source {
 		case "image":
-			image, err = m.pullImage(ctx, app, lb)
+			if auth, err = m.RegistryAuth(ctx, app); err != nil {
+				return err
+			}
+			if auth != nil {
+				lb.addSecret(auth.Password)
+			}
+			image, err = m.pullImage(ctx, app, auth, lb)
 		case "git":
 			image, err = m.buildGit(ctx, app, depID, lb)
 		default:
@@ -177,7 +184,7 @@ func (m *Manager) run(appID, depID int64) {
 		if err != nil {
 			return err
 		}
-		if err := m.applyService(ctx, app, image, lb); err != nil {
+		if err := m.applyService(ctx, app, image, auth, lb); err != nil {
 			return err
 		}
 		return m.SyncProxy(ctx)
@@ -205,9 +212,55 @@ func (m *Manager) run(appID, depID int64) {
 	}
 }
 
-func (m *Manager) pullImage(ctx context.Context, app *store.App, lb *logBuf) (string, error) {
-	lb.Printf("Pulling %s", app.Image)
-	if err := m.docker.ImagePull(ctx, app.Image, lb); err != nil {
+// RegistryAuth returns the registry login an image app pulls with, or nil
+// when it has none. A login is only ever sent to its own registry: if the
+// image moved to another registry, the deploy stops instead.
+func (m *Manager) RegistryAuth(ctx context.Context, app *store.App) (*docker.RegistryAuth, error) {
+	if app.RegistryID == 0 || app.Source != "image" {
+		return nil, nil
+	}
+	reg, err := m.store.Registry(ctx, app.RegistryID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if host := docker.RegistryHost(app.Image); host != reg.Server {
+		return nil, fmt.Errorf("the registry login %q is for %s, but %s is on %s; choose another login in the app's settings", reg.Name, reg.Server, app.Image, host)
+	}
+	return &docker.RegistryAuth{Server: reg.Server, Username: reg.Username, Password: reg.Password}, nil
+}
+
+// buildRegistries returns the saved logins a build may use to pull private
+// base images, one per registry (Docker sends each only to its registry).
+func (m *Manager) buildRegistries(ctx context.Context) ([]docker.RegistryAuth, error) {
+	regs, err := m.store.Registries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []docker.RegistryAuth
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if seen[r.Server] {
+			continue
+		}
+		seen[r.Server] = true
+		out = append(out, docker.RegistryAuth{Server: r.Server, Username: r.Username, Password: r.Password})
+	}
+	return out, nil
+}
+
+func (m *Manager) pullImage(ctx context.Context, app *store.App, auth *docker.RegistryAuth, lb *logBuf) (string, error) {
+	if auth != nil {
+		lb.Printf("Pulling %s (signed in to %s as %s)", app.Image, auth.Server, auth.Username)
+	} else {
+		lb.Printf("Pulling %s", app.Image)
+	}
+	if err := m.docker.ImagePull(ctx, app.Image, auth, lb); err != nil {
+		if auth == nil && isAuthError(err) {
+			lb.Printf("The registry refused an anonymous pull. If this image is private, add a login under Settings > Registries and choose it in the app's settings.")
+		}
 		// Fall back to an image that already exists on this server (for
 		// example one built by hand or loaded with `docker load`).
 		if _, ierr := m.docker.ImageDigestRef(ctx, app.Image); ierr == nil {
@@ -308,10 +361,17 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 
 	tag := fmt.Sprintf("simplepanel/%s:%d", app.ServiceName(), depID)
 	lb.Printf("Building image %s", tag)
+	regs, err := m.buildRegistries(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range regs {
+		lb.addSecret(r.Password)
+	}
 	build := func(noPull bool) error {
 		pr, pw := io.Pipe()
 		go func() { pw.CloseWithError(tarDir(ctxDir, pw)) }()
-		err := m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile, NoPull: noPull}, lb)
+		err := m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile, NoPull: noPull, Registries: regs}, lb)
 		pr.Close()
 		return err
 	}
@@ -457,7 +517,9 @@ func (m *Manager) ServiceSpec(app *store.App, image string) (docker.ServiceSpec,
 	return spec, nil
 }
 
-func (m *Manager) applyService(ctx context.Context, app *store.App, image string, lb *logBuf) error {
+// applyService creates or updates the app's service. auth (nil for none)
+// is handed to Swarm so every node can pull the image.
+func (m *Manager) applyService(ctx context.Context, app *store.App, image string, auth *docker.RegistryAuth, lb *logBuf) error {
 	spec, err := m.ServiceSpec(app, image)
 	if err != nil {
 		return err
@@ -474,7 +536,7 @@ func (m *Manager) applyService(ctx context.Context, app *store.App, image string
 	switch {
 	case errors.Is(err, docker.ErrNotFound):
 		lb.Printf("Creating service %s", spec.Name)
-		if _, err := m.docker.ServiceCreate(ctx, spec); err != nil {
+		if _, err := m.docker.ServiceCreate(ctx, spec, auth); err != nil {
 			return fmt.Errorf("create service: %w", err)
 		}
 	case err != nil:
@@ -486,7 +548,7 @@ func (m *Manager) applyService(ctx context.Context, app *store.App, image string
 			lb.Printf("Updating %s (stop-first: databases restart briefly)", spec.Name)
 		}
 		spec.TaskTemplate.ForceUpdate = existing.Spec.TaskTemplate.ForceUpdate + 1
-		if err := m.docker.ServiceUpdate(ctx, existing.ID, existing.Version.Index, spec); err != nil {
+		if err := m.docker.ServiceUpdate(ctx, existing.ID, existing.Version.Index, spec, auth, false); err != nil {
 			return fmt.Errorf("update service: %w", err)
 		}
 	}
@@ -559,7 +621,7 @@ func (m *Manager) Restart(ctx context.Context, app *store.App) error {
 		return err
 	}
 	svc.Spec.TaskTemplate.ForceUpdate++
-	return m.docker.ServiceUpdate(ctx, svc.ID, svc.Version.Index, svc.Spec)
+	return m.docker.ServiceUpdate(ctx, svc.ID, svc.Version.Index, svc.Spec, nil, true)
 }
 
 // Scale sets the replica count on the running service (0 stops the app).
@@ -572,7 +634,7 @@ func (m *Manager) Scale(ctx context.Context, app *store.App, replicas uint64) er
 		return errors.New("service is not replicated")
 	}
 	svc.Spec.Mode.Replicated.Replicas = replicas
-	return m.docker.ServiceUpdate(ctx, svc.ID, svc.Version.Index, svc.Spec)
+	return m.docker.ServiceUpdate(ctx, svc.ID, svc.Version.Index, svc.Spec, nil, true)
 }
 
 // Remove deletes the app's service. Named volumes are kept on purpose.
@@ -757,6 +819,17 @@ func SplitCommand(s string) ([]string, error) {
 		out = append(out, cur.String())
 	}
 	return out, nil
+}
+
+// isAuthError reports a registry refusing a pull for lack of a login.
+func isAuthError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"unauthorized", "denied", "authentication required", "no basic auth credentials"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRegistryPullError reports errors caused by the registry rather than the

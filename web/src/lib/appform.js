@@ -25,6 +25,7 @@ export function emptyForm() {
     command: '',
     volumes: [],
     ports: [],
+    registryId: null, // null: let the server pick the login for the image's registry
   };
 }
 
@@ -52,6 +53,7 @@ export function formFromApp(a) {
     command: a.command,
     volumes: a.volumes.map((v) => ({ ...v })),
     ports: a.ports.map((p) => ({ ...p })),
+    registryId: a.registryId || 0,
   };
 }
 

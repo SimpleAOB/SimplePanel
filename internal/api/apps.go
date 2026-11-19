@@ -232,6 +232,11 @@ type appInput struct {
 	AutoDeploy    *bool   `json:"autoDeploy"`
 	Previews      *bool   `json:"previews"`
 	PreviewEnv    *string `json:"previewEnv"`
+
+	// RegistryID is the saved registry login for a private image: 0 for
+	// none, nil to keep the current one or pick it from the image's
+	// registry (see resolveRegistry).
+	RegistryID *int64 `json:"registryId"`
 }
 
 // apply validates in and copies it onto a.
@@ -420,6 +425,10 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request, u *store.User
 			return
 		}
 	}
+	if err := s.resolveRegistry(r.Context(), a, in.RegistryID); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	if err := s.store.CreateApp(r.Context(), a); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeErr(w, 409, "an app with that name already exists in this project")
@@ -569,6 +578,11 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if lvl >= store.LevelDeploy {
 		out["webhookPath"] = "/api/hooks/deploy/" + a.WebhookToken
 	}
+	if a.RegistryID != 0 {
+		if g, err := s.store.Registry(r.Context(), a.RegistryID); err == nil {
+			out["registry"] = map[string]any{"id": g.ID, "name": g.Name, "server": g.Server}
+		}
+	}
 	if a.Source == "git" {
 		if a.DeployKeyPub != "" {
 			out["deployKeyUrl"] = deploy.DeployKeyURL(a.GitURL)
@@ -629,6 +643,10 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 			writeErr(w, 400, err.Error())
 			return
 		}
+	}
+	if err := s.resolveRegistry(r.Context(), a, in.RegistryID); err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	if err := s.store.UpdateApp(r.Context(), a); err != nil {
 		s.storeErr(w, err)

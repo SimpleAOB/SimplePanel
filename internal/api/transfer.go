@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SimpleAOB/SimplePanel/internal/deploy"
+	"github.com/SimpleAOB/SimplePanel/internal/docker"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 )
 
@@ -50,8 +51,12 @@ type exportService struct {
 	Ports      []store.Port   `json:"ports,omitempty"`
 	Domains    []exportDomain `json:"domains,omitempty"`
 	GitPrivate bool           `json:"gitPrivate,omitempty"` // a token was set; add it again after import
-	AutoDomain *bool          `json:"autoDomain,omitempty"` // only exported when turned off
-	HTTPPort   int            `json:"httpPort,omitempty"`
+	// Registry is the host of a private image's registry ("ghcr.io"). The
+	// login itself is never exported; on import the app uses a saved login
+	// for that registry if there is exactly one.
+	Registry   string `json:"registry,omitempty"`
+	AutoDomain *bool  `json:"autoDomain,omitempty"` // only exported when turned off
+	HTTPPort   int    `json:"httpPort,omitempty"`
 }
 
 type exportGit struct {
@@ -89,6 +94,9 @@ func (s *Server) exportService(r *http.Request, a *store.App, withEnv bool) (exp
 		return es, nil
 	}
 	es.Source = a.Source
+	if a.Source == "image" && a.RegistryID != 0 {
+		es.Registry = docker.RegistryHost(a.Image)
+	}
 	replicas := a.Replicas
 	es.Replicas = &replicas
 	es.Volumes = a.Volumes
@@ -419,6 +427,17 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, u *store.
 	}
 	res := importResult{ProjectID: project.ID, AppIDs: []int64{}, Warnings: []string{}}
 	panelDomain, _ := s.store.Setting(ctx, "panel_domain")
+	needsLogin := map[int]bool{}
+	for i, ps := range plans {
+		if err := s.resolveRegistry(ctx, ps.app, nil); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		if services[i].Registry != "" && ps.app.RegistryID == 0 && ps.app.Source == "image" {
+			needsLogin[i] = true
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: private image on %s; add a login under Settings > Registries and choose it before deploying", ps.app.Name, docker.RegistryHost(ps.app.Image)))
+		}
+	}
 	for _, ps := range plans {
 		ps.app.ProjectID = project.ID
 		if err := s.store.CreateApp(ctx, ps.app); err != nil {
@@ -452,7 +471,7 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, u *store.
 	}
 	if req.Deploy {
 		for i, ps := range plans {
-			if services[i].GitPrivate {
+			if services[i].GitPrivate || needsLogin[i] {
 				continue
 			}
 			if _, err := s.deploy.Deploy(ctx, ps.app.ID, "import"); err != nil {

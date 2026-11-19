@@ -354,6 +354,17 @@ var migrations = []string{
 		created_at INTEGER NOT NULL
 	);
 	CREATE INDEX query_history_app_user ON query_history(app_id, user_id, id DESC);`,
+	// v9: private container registry logins, chosen per app.
+	`CREATE TABLE registries (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		server TEXT NOT NULL,
+		username TEXT NOT NULL,
+		password TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	ALTER TABLE apps ADD COLUMN registry_id INTEGER REFERENCES registries(id) ON DELETE SET NULL;`,
 }
 
 func (s *Store) migrate() error {
@@ -579,6 +590,10 @@ type App struct {
 	DeployKey     string `json:"-"`
 	DeployKeyPub  string `json:"deployKeyPub"`
 	SSHKnownHosts string `json:"-"`
+
+	// RegistryID is the saved registry login used to pull a private image
+	// (0: none).
+	RegistryID int64 `json:"registryId"`
 }
 
 // IsPreview reports whether the app is a pull request preview.
@@ -595,7 +610,8 @@ const appCols = `a.id,a.project_id,p.name,a.name,a.kind,a.source,a.image,a.git_u
 	a.build_path,a.dockerfile,a.env,a.replicas,a.cpu_limit,a.memory_mb,a.command,a.volumes,a.ports,
 	a.webhook_token,a.created_at,a.updated_at,a.build_type,a.build_image,a.build_command,a.output_dir,a.spa,
 	a.auto_domain,a.http_port,COALESCE(a.git_provider_id,0),a.git_repo,a.auto_deploy,a.previews,a.preview_env,
-	COALESCE(a.parent_app_id,0),a.pr_number,a.pr_title,a.pr_url,a.pr_comment_id,a.deploy_key,a.deploy_key_pub,a.ssh_known_hosts`
+	COALESCE(a.parent_app_id,0),a.pr_number,a.pr_title,a.pr_url,a.pr_comment_id,a.deploy_key,a.deploy_key_pub,a.ssh_known_hosts,
+	COALESCE(a.registry_id,0)`
 
 type scanner interface{ Scan(...any) error }
 
@@ -607,7 +623,7 @@ func scanApp(r scanner) (*App, error) {
 		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt,
 		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA, &a.AutoDomain, &a.HTTPPort,
 		&a.GitProviderID, &a.GitRepo, &a.AutoDeploy, &a.Previews, &a.PreviewEnv,
-		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts)
+		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts, &a.RegistryID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -669,13 +685,13 @@ func (s *Store) CreateApp(ctx context.Context, a *App) error {
 		build_path,dockerfile,env,replicas,cpu_limit,memory_mb,command,volumes,ports,webhook_token,created_at,updated_at,
 		build_type,build_image,build_command,output_dir,spa,auto_domain,http_port,
 		git_provider_id,git_repo,auto_deploy,previews,preview_env,parent_app_id,pr_number,pr_title,pr_url,
-		deploy_key,deploy_key_pub,ssh_known_hosts)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		deploy_key,deploy_key_pub,ssh_known_hosts,registry_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ProjectID, a.Name, a.Kind, a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile,
 		a.Env, a.Replicas, a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.WebhookToken, t, t,
 		a.BuildType, a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort,
 		nullID(a.GitProviderID), a.GitRepo, a.AutoDeploy, a.Previews, a.PreviewEnv, nullID(a.ParentAppID), a.PRNumber, a.PRTitle, a.PRURL,
-		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts)
+		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts, nullID(a.RegistryID))
 	if err != nil {
 		return mapErr(err)
 	}
@@ -693,12 +709,12 @@ func (s *Store) UpdateApp(ctx context.Context, a *App) error {
 		dockerfile=?,env=?,replicas=?,cpu_limit=?,memory_mb=?,command=?,volumes=?,ports=?,updated_at=?,
 		build_type=?,build_image=?,build_command=?,output_dir=?,spa=?,auto_domain=?,http_port=?,
 		git_provider_id=?,git_repo=?,auto_deploy=?,previews=?,preview_env=?,pr_title=?,pr_url=?,pr_comment_id=?,
-		deploy_key=?,deploy_key_pub=?,ssh_known_hosts=? WHERE id=?`,
+		deploy_key=?,deploy_key_pub=?,ssh_known_hosts=?,registry_id=? WHERE id=?`,
 		a.Source, a.Image, a.GitURL, a.GitBranch, a.GitToken, a.BuildPath, a.Dockerfile, a.Env, a.Replicas,
 		a.CPULimit, a.MemoryMB, a.Command, string(vols), string(ports), a.UpdatedAt,
 		orAuto(a.BuildType), a.BuildImage, a.BuildCommand, a.OutputDir, a.SPA, a.AutoDomain, a.HTTPPort,
 		nullID(a.GitProviderID), a.GitRepo, a.AutoDeploy, a.Previews, a.PreviewEnv, a.PRTitle, a.PRURL, a.PRCommentID,
-		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts, a.ID)
+		a.DeployKey, a.DeployKeyPub, a.SSHKnownHosts, nullID(a.RegistryID), a.ID)
 	return mapErr(err)
 }
 

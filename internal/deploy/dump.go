@@ -199,7 +199,7 @@ func (m *Manager) helperImage(ctx context.Context) (string, error) {
 	if m.docker.ImageExists(ctx, img) {
 		return img, nil
 	}
-	if err := m.docker.ImagePull(ctx, img, nil); err != nil {
+	if err := m.docker.ImagePull(ctx, img, nil, nil); err != nil {
 		return "", fmt.Errorf("pulling helper image %s: %w", img, err)
 	}
 	return img, nil

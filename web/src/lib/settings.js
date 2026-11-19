@@ -8,6 +8,7 @@ export function settingsSections(admin) {
     ['notifications', 'Notifications', 'bell', true],
     ['monitoring', 'Monitoring', 'chart', true],
     ['git', 'Git', 'git', true],
+    ['registries', 'Registries', 'box', true],
     ['api', 'API & CLI', 'terminal', false],
     ['ai', 'Connect an AI', 'sparkles', false],
     ['account', 'Account', 'user', false],

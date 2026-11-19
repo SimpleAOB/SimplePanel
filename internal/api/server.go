@@ -199,6 +199,13 @@ func (s *Server) Handler() http.Handler {
 	a("GET /api/cron-runs/{id}", s.getCronRun)
 	a("GET /api/deployments/{id}", s.getDeployment)
 
+	// Private container registry logins.
+	a("GET /api/registries", s.listRegistries)
+	a("POST /api/registries", s.saveRegistry)
+	a("POST /api/registries/test", s.testRegistry)
+	a("PUT /api/registries/{id}", s.saveRegistry)
+	a("DELETE /api/registries/{id}", s.deleteRegistry)
+
 	// Database Query tab (read-only).
 	a("GET /api/apps/{id}/query", s.queryInfo)
 	a("POST /api/apps/{id}/query", s.runQuery)
