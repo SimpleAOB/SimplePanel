@@ -4,7 +4,9 @@
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
 
-  let { host, https = true, serverIp = '' } = $props();
+  // wildcard: the base of an automatic subdomain, whose DNS comes from one
+  // *.base record rather than a record per app.
+  let { host, https = true, serverIp = '', wildcard = '' } = $props();
   let res = $state(null);
   let busy = $state(false);
   let failed = $state('');
@@ -42,6 +44,9 @@
   });
   let message = $derived.by(() => {
     if (!res || level === 'good') return '';
+    if (wildcard && (res.dns === 'missing' || res.dns === 'elsewhere')) {
+      return `The wildcard record *.${wildcard} ${res.dns === 'missing' ? "isn't set up yet" : 'points at another server'}. It is one A record for every app${serverIp ? `, pointing at ${serverIp}` : ''}; see Settings › General.`;
+    }
     if (res.dns === 'missing' || res.dns === 'elsewhere') {
       return serverIp ? `${res.dnsMessage} This server's IP address is ${serverIp}.` : res.dnsMessage;
     }

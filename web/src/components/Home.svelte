@@ -105,7 +105,7 @@
   Overview
   {#snippet actions()}
     {#if isAdmin()}
-      <button class="btn" onclick={() => (importing = true)}><span>Import<span class="wide"> project</span></span></button>
+      <button class="btn" onclick={() => (importing = true)}><span>Import<span class="wide">&nbsp;project</span></span></button>
       <button class="btn primary" onclick={() => { newOpen = true; }}>New project</button>
     {/if}
   {/snippet}

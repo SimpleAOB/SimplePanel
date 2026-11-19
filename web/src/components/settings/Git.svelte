@@ -14,6 +14,11 @@
   let ghOrg = $state('');
   let ghBusy = $state(false);
   let publicUrl = $state(location.origin);
+  // localhost and private addresses can't be reached from GitHub at all.
+  let unreachable = $derived.by(() => {
+    const h = new URL(publicUrl).hostname;
+    return h === 'localhost' || h.endsWith('.local') || /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || h === '[::1]';
+  });
   let gl = $state({ baseUrl: 'https://gitlab.com', token: '', name: '' });
   let glBusy = $state(false);
   let glErr = $state('');
@@ -179,7 +184,11 @@
       </label>
     {/if}
   </div>
-  {#if insecure}
+  {#if unreachable}
+    <p class="warn">
+      GitHub can't reach <code>{publicUrl}</code>, so it won't be able to tell SimplePanel about pushes. Set a panel domain under <a href="#/settings/general">General</a> first.
+    </p>
+  {:else if insecure}
     <p class="warn">
       GitHub will send push events to <code>{publicUrl}</code>, which isn't HTTPS. Set a panel domain under <a href="#/settings/general">General</a> first if you can.
     </p>
@@ -214,7 +223,8 @@
       <label class="field">
         <span>Access token</span>
         <input type="password" bind:value={gl.token} autocomplete="off" placeholder="glpat-…" required />
-        <small>A personal, group or project access token with the <code>api</code> scope, from a user with the Maintainer role. It is stored on this server and never shown again.</small>
+        <small>A personal, group or project access token with the <code>api</code> scope, from a user with the Maintainer role. It is stored on this server and never shown again.
+          {#if gl.baseUrl}<a href="{gl.baseUrl.replace(/\/+$/, '')}/-/user_settings/personal_access_tokens?name=SimplePanel&scopes=api" target="_blank" rel="noopener noreferrer">Create a token</a>{/if}</small>
       </label>
       {#if glErr}<p class="error">{glErr}</p>{/if}
       <div class="row end">

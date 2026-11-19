@@ -281,7 +281,7 @@
 
   function saveSettings(e) {
     e.preventDefault();
-    saveApp(form, false);
+    saveApp(form, e.submitter?.value === 'deploy');
   }
 
   async function addDomain(e) {
@@ -334,6 +334,18 @@
 
   function masked(s) {
     return reveal ? s : '•'.repeat(Math.min(s?.length || 0, 16));
+  }
+
+  // A crash excerpt starts at its first error line (the cause) when there
+  // is one; stack frames and runtime versions usually follow it.
+  function scrollToError(node, lines) {
+    const toError = (ls) => {
+      const i = (ls || []).findIndex((l) => /error|exception|traceback|fatal|panic/i.test(l));
+      if (i < 0) node.scrollTop = node.scrollHeight;
+      else node.scrollTop = Math.max(0, (node.scrollHeight / ls.length) * i - 4);
+    };
+    toError(lines);
+    return { update: toError };
   }
 
   // When the app crashes on start, show what the last crash printed.
@@ -445,7 +457,7 @@
         {/if}
         {#if failure.kind === 'crash'}
           {#if crash?.lines.length}
-            <pre class="tail" use:scrollEnd={crash.lines}>{crash.lines.join('\n')}</pre>
+            <pre class="tail" use:scrollToError={crash.lines}>{crash.lines.join('\n')}</pre>
           {:else if crash}
             <small class="faint">It stopped without printing anything.</small>
           {/if}
@@ -461,7 +473,7 @@
           <button class="btn small" onclick={crashLogs}>Show app logs</button>
         </div>
         <p class="muted">It stops soon after it starts ({detail.status.message}). These are the last lines it printed. A missing setting in the Environment tab is the usual cause.</p>
-        {#if crash?.lines.length}<pre class="tail" use:scrollEnd={crash.lines}>{crash.lines.join('\n')}</pre>{/if}
+        {#if crash?.lines.length}<pre class="tail" use:scrollToError={crash.lines}>{crash.lines.join('\n')}</pre>{/if}
       </section>
     {/if}
 
@@ -491,7 +503,7 @@
           {#if canDeploy && detail.status.state === 'stopped'}
             <button class="btn" disabled={!!busy} onclick={start}>Start</button>
           {:else if canDeploy && !['not_deployed', 'deploy_failed', 'deploying'].includes(detail.status.state)}
-            <button class="btn" disabled={!!busy} onclick={restart}>Restart</button>
+            <button class="btn" disabled={!!busy} onclick={restart} title="Restarts the running version. To apply saved changes to settings or environment variables, deploy instead.">Restart</button>
             <button class="btn" disabled={!!busy} onclick={stop}>Stop</button>
           {/if}
         </div>
@@ -625,7 +637,7 @@
           {#if detail.app.autoDomain && !detail.app.httpPort && !detail.app.imagePort && !detail.domains.length && detail.lastDeployment?.status === 'succeeded'}
             <p class="warn">The image doesn't say which port it listens on, so this address goes to port 80. If the site doesn't load, change the port.</p>
           {/if}
-          {#if detail.autoHost}<DomainStatus host={detail.autoHost} {serverIp} />{/if}
+          {#if detail.autoHost}<DomainStatus host={detail.autoHost} {serverIp} wildcard={detail.autoHost.slice(detail.autoHost.indexOf('.') + 1)} />{/if}
         {/if}
         {#if detail.domains.length === 0 && !detail.autoHost}
           <p class="muted">
@@ -751,7 +763,7 @@
             <li>
               <button class="dep" onclick={() => showDeployment(d.id)}>
                 <span class="dot {depDot(d.status)}"></span>
-                <span class="grow">#{d.id} · {depLabel(d.status)}{#if d.commitSha} <code class="sha">{d.commitSha.slice(0, 7)}</code> <span class="faint msg">{d.commitMsg}</span>{/if}</span>
+                <span class="grow">#{d.id} · {depLabel(d.status)}{#if d.commitSha}{' · '}<code class="sha">{d.commitSha.slice(0, 7)}</code> <span class="faint msg">{d.commitMsg}</span>{/if}</span>
                 <span class="faint">{d.trigger}</span>
                 <span class="faint">{timeAgo(d.createdAt)}</span>
               </button>
@@ -783,7 +795,7 @@
         {/if}
         <div class="row end">
           {#if saved}<span class="ok">{saved}</span>{/if}
-          {#if canDeploy}<button class="btn primary" disabled={!!busy}>Save</button>{:else}<span class="faint">Your role can view these settings but not change them.</span>{/if}
+          {#if canDeploy}<button class="btn" name="action" value="save" disabled={!!busy}>Save</button> <button class="btn primary" name="action" value="deploy" disabled={!!busy}>Save and deploy</button>{:else}<span class="faint">Your role can view these settings but not change them.</span>{/if}
         </div>
       </form>
 

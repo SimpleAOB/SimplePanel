@@ -103,7 +103,7 @@
     {#if isAdmin()}
       <section class="card danger-zone">
         <h3>Delete project</h3>
-        <p class="muted">Removes every app in this project and its domains. Volumes are kept.</p>
+        <p class="muted">Removes every app and database in this project, and their domains. Their data stays in Docker volumes on the server's disk.</p>
         <div class="row">
           <label class="field">
             <span>Type the project name to confirm</span>

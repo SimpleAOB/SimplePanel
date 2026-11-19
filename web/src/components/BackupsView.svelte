@@ -507,9 +507,14 @@
     flex-wrap: wrap;
   }
   .grow {
-    /* On a phone the buttons wrap below instead of squeezing the date. */
-    flex: 1 1 220px;
+    flex: 1;
     min-width: 0;
+  }
+  @media (max-width: 560px) {
+    /* On a phone the buttons wrap below instead of squeezing the date. */
+    .grow {
+      flex-basis: 100%;
+    }
   }
   .link {
     display: flex;

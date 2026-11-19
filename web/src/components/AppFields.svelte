@@ -41,10 +41,11 @@
   });
   let imageTyped = $derived(/[/:]/.test(value.image || '') || (value.image || '').length > 3);
 
+  let showStatic = $state(false);
   // Fill the build fields from a preset, and show them so the user can check.
   function usePreset(preset) {
     applyStaticPreset(value, preset);
-    more = true;
+    showStatic = true;
     helpOpen = false;
   }
 
@@ -151,27 +152,27 @@
           </label>
         {/if}
       </div>
-      {#if value.buildType !== 'dockerfile'}
-        <div class="static card">
-          <h3 class="sub-title">Static site build {#if value.buildType === 'auto'}<span class="faint">(used when there's no Dockerfile)</span>{/if}</h3>
-          <div class="row">
-            <label class="field">
-              <span>Build command</span>
-              <input type="text" bind:value={value.buildCommand} placeholder="none: serve files as they are" class="mono" />
-            </label>
-            <label class="field">
-              <span>Output directory</span>
-              <input type="text" bind:value={value.outputDir} placeholder={value.buildCommand ? 'e.g. dist' : '/ (build path)'} />
-            </label>
-          </div>
+    {/if}
+    {#if value.buildType !== 'dockerfile' && (adv || showStatic || (value.buildType === 'static' && (value.buildCommand || value.outputDir)))}
+      <div class="static card">
+        <h3 class="sub-title">Static site build {#if value.buildType === 'auto'}<span class="faint">(used when there's no Dockerfile)</span>{/if}</h3>
+        <div class="row">
           <label class="field">
-            <span>Build image</span>
-            <input type="text" bind:value={value.buildImage} placeholder="node:22-alpine" />
-            <small>Runs the build command. Node dependencies install automatically. For Hugo use e.g. hugomods/hugo:exts with <code>hugo --minify</code> and output <code>public</code>.</small>
+            <span>Build command</span>
+            <input type="text" bind:value={value.buildCommand} placeholder="none: serve files as they are" class="mono" />
           </label>
-          <label class="check"><input type="checkbox" bind:checked={value.spa} /> Single-page app: send unknown paths to index.html</label>
+          <label class="field">
+            <span>Output directory</span>
+            <input type="text" bind:value={value.outputDir} placeholder={value.buildCommand ? 'e.g. dist' : '/ (build path)'} />
+          </label>
         </div>
-      {/if}
+        <label class="field">
+          <span>Build image</span>
+          <input type="text" bind:value={value.buildImage} placeholder="node:22-alpine" />
+          <small>Runs the build command. Node dependencies install automatically. For Hugo use e.g. hugomods/hugo:exts with <code>hugo --minify</code> and output <code>public</code>.</small>
+        </label>
+        <label class="check"><input type="checkbox" bind:checked={value.spa} /> Single-page app: send unknown paths to index.html</label>
+      </div>
     {/if}
   {/if}
 

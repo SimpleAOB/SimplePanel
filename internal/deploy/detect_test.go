@@ -110,3 +110,17 @@ func TestCleanGitURL(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEnvDotenv(t *testing.T) {
+	got, err := ParseEnv("export A=\"hello world\"\nB='x y'\nC=\"a\\\"b\\nc\"\nD=plain \"q\"\nE=\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"A=hello world", "B=x y", "C=a\"b\nc", "D=plain \"q\"", "E="}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", got)
+	}
+	if _, err := ParseEnv("MY KEY=1"); err == nil || !strings.Contains(err.Error(), "no spaces") {
+		t.Fatalf("err %v", err)
+	}
+}

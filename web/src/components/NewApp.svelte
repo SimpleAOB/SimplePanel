@@ -236,7 +236,7 @@
   {#if !ui.advanced}
     <div>
       <button type="button" class="linkish" onclick={() => (more = !more)}>{more ? 'Show fewer options' : 'Show more options'}</button>
-      {#if !more}<small class="faint">({form.source === 'git' ? 'access token, build path, Dockerfile, ' : ''}replicas, limits, volumes, ports, command)</small>{/if}
+      {#if !more}<small class="faint">({form.source === 'git' ? (form.buildType === 'static' ? 'access token, build path, build command, ' : 'access token, build path, Dockerfile, ') : ''}replicas, limits, volumes, ports, command)</small>{/if}
     </div>
   {/if}
 
@@ -253,7 +253,7 @@
       {/if}
       {#if envErr}<p class="error">{envErr}</p>{/if}
     {:else}
-      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length} <button type="button" class="btn small" onclick={connectDb}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
+      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length}<button type="button" class="btn small" style="margin-left: var(--sp-space-2)" onclick={connectDb}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
     {/if}
   </div>
 

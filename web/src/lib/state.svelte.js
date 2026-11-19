@@ -134,9 +134,10 @@ export function startRouter() {
     }
     lastHash = location.hash;
     ui.route = parseHash();
-    // On a phone the panel covers the page; picking another app or database
-    // from the menu should show that page, not the old panel.
-    if (ui.navOpen && window.innerWidth <= 1100 && ui.route.appId !== prev.appId) ui.panelOpen = false;
+    // On a phone the panel covers the page; going to another app or
+    // database (from the menu or with Back) shows that page, not the old
+    // app's panel.
+    if (window.innerWidth <= 1100 && ui.route.appId !== prev.appId) ui.panelOpen = false;
     ui.navOpen = false;
   });
 }
