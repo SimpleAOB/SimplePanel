@@ -51,6 +51,26 @@
     ...(!isPreview ? [['cron', 'Cron jobs']] : []),
     ['settings', 'Settings'],
   ]);
+  // Internal addresses: every service joins its project's private network
+  // under its short name, and its Swarm name works from that network too.
+  let internalPort = $derived.by(() => {
+    if (!detail) return 0;
+    if (isDb) return detail.database?.port || 0;
+    const a = detail.app;
+    if (a.httpPort > 0 || detail.domains.length) return detail.autoPort;
+    if (a.buildType === 'static') return 80;
+    return 0;
+  });
+  let internalRoutes = $derived.by(() => {
+    if (!detail) return [];
+    const scheme = isDb ? '' : 'http://';
+    const tail = internalPort ? `:${internalPort}` : '';
+    const end = isDb ? '' : '/';
+    return [
+      ['Short name', `${scheme}${detail.app.name}${tail}${end}`, 'From services in this project'],
+      ['Full name', `${scheme}${detail.serviceName}${tail}${end}`, 'The Swarm service name'],
+    ];
+  });
   let autoBusy = $state(false);
   let autoPort = $state(0);
 
@@ -269,6 +289,27 @@
             <button class="btn" disabled={!!busy} onclick={stop}>Stop</button>
           {/if}
         </div>
+      </section>
+
+      <section class="card">
+        <h3>Internal address</h3>
+        <p class="muted">
+          Other apps and databases in this project can reach {isDb ? 'this database' : 'this app'} over the project's private network,
+          without going through the internet.
+        </p>
+        <dl class="conn routes">
+          {#each internalRoutes as [label, val, hint]}
+            <dt>{label}</dt>
+            <dd>
+              <code>{val}</code>
+              <button class="btn ghost icon small" title="Copy {label.toLowerCase()} address" aria-label="Copy {label.toLowerCase()} address" onclick={() => copy(val, 'route-' + label)}><Icon name="copy" size={14} /></button>
+              {#if copied === 'route-' + label}<span class="ok">Copied</span>{:else}<span class="faint hint">{hint}</span>{/if}
+            </dd>
+          {/each}
+        </dl>
+        {#if !internalPort}
+          <small class="faint">Add the port your app listens on, for example <code>http://{detail.app.name}:3000/</code>. Adding a domain sets it here.</small>
+        {/if}
       </section>
 
       {#if isDb}
@@ -647,6 +688,12 @@
     align-items: center;
     gap: var(--sp-space-2);
     min-width: 0;
+  }
+  .routes dd {
+    flex-wrap: wrap;
+  }
+  .routes .hint {
+    font-size: var(--sp-text-sm);
   }
   .conn code {
     overflow-wrap: anywhere;
