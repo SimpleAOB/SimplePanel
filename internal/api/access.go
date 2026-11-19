@@ -164,6 +164,9 @@ var activityActions = map[string]string{
 	"DELETE /api/cron/{id}":                   "remove cron job",
 	"POST /api/cron/{id}/run":                 "run cron job",
 	"PUT /api/update/settings":                "change update settings",
+	"POST /api/registries":                    "add registry login",
+	"PUT /api/registries/{id}":                "change registry login",
+	"DELETE /api/registries/{id}":             "remove registry login",
 }
 
 // activityTarget names what a request acts on, looked up before the
@@ -186,6 +189,10 @@ func (s *Server) activityTarget(r *http.Request) string {
 		case strings.Contains(r.Pattern, "/git/providers/{id}"):
 			if p, err := s.store.GitProvider(ctx, id); err == nil {
 				target = p.Name
+			}
+		case strings.Contains(r.Pattern, "/registries/{id}"):
+			if g, err := s.store.Registry(ctx, id); err == nil {
+				target = g.Name
 			}
 		case strings.Contains(r.Pattern, "/users/{id}"):
 			if x, err := s.store.User(ctx, id); err == nil {

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -121,8 +122,16 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, q url.Values, in, out any) error {
+	return c.doJSONAuth(ctx, method, path, q, in, out, "")
+}
+
+// doJSONAuth is doJSON with an optional X-Registry-Auth header.
+func (c *Client) doJSONAuth(ctx context.Context, method, path string, q url.Values, in, out any, registryAuth string) error {
 	var body io.Reader
 	hdr := map[string]string{}
+	if registryAuth != "" {
+		hdr["X-Registry-Auth"] = registryAuth
+	}
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
@@ -207,14 +216,19 @@ func consumeStream(r io.Reader, w io.Writer) error {
 	return sc.Err()
 }
 
-// ImagePull pulls ref, writing progress to w.
-func (c *Client) ImagePull(ctx context.Context, ref string, w io.Writer) error {
+// ImagePull pulls ref, writing progress to w. auth may be nil for public
+// images.
+func (c *Client) ImagePull(ctx context.Context, ref string, auth *RegistryAuth, w io.Writer) error {
 	name, tag := SplitTag(ref)
 	q := url.Values{"fromImage": {name}}
 	if tag != "" {
 		q.Set("tag", tag)
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil, nil)
+	var hdr map[string]string
+	if auth != nil {
+		hdr = map[string]string{"X-Registry-Auth": auth.Encode()}
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/images/create", q, nil, hdr)
 	if err != nil {
 		return err
 	}
@@ -259,6 +273,9 @@ type BuildOptions struct {
 	Dockerfile string
 	BuildArgs  map[string]string
 	NoPull     bool // use cached base images instead of refreshing them
+	// Registries are logins for pulling private base images. Docker sends
+	// each one only to its own registry.
+	Registries []RegistryAuth
 }
 
 // ImageBuild builds an image from a tar build context.
@@ -274,7 +291,11 @@ func (c *Client) ImageBuild(ctx context.Context, tarCtx io.Reader, opt BuildOpti
 		b, _ := json.Marshal(opt.BuildArgs)
 		q.Set("buildargs", string(b))
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/build", q, tarCtx, map[string]string{"Content-Type": "application/x-tar"})
+	hdr := map[string]string{"Content-Type": "application/x-tar"}
+	if len(opt.Registries) > 0 {
+		hdr["X-Registry-Config"] = encodeRegistryConfig(opt.Registries)
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/build", q, tarCtx, hdr)
 	if err != nil {
 		return err
 	}
@@ -439,15 +460,35 @@ func (c *Client) ServiceInspect(ctx context.Context, name string) (*Service, err
 	return &s, nil
 }
 
-func (c *Client) ServiceCreate(ctx context.Context, spec ServiceSpec) (string, error) {
+// ServiceCreate creates a service. auth is the registry login Swarm hands to
+// every node that runs a task, so they can pull a private image; nil
+// means no login.
+func (c *Client) ServiceCreate(ctx context.Context, spec ServiceSpec, auth *RegistryAuth) (string, error) {
 	var out struct{ ID string }
-	err := c.doJSON(ctx, http.MethodPost, "/services/create", nil, spec, &out)
+	err := c.doJSONAuth(ctx, http.MethodPost, "/services/create", nil, spec, &out, serviceAuth(auth))
 	return out.ID, err
 }
 
-func (c *Client) ServiceUpdate(ctx context.Context, id string, version uint64, spec ServiceSpec) error {
+// ServiceUpdate updates a service. With keepAuth, Swarm keeps the registry
+// login the service already has (used for restarts and scaling); otherwise
+// auth replaces it, and nil removes it.
+func (c *Client) ServiceUpdate(ctx context.Context, id string, version uint64, spec ServiceSpec, auth *RegistryAuth, keepAuth bool) error {
 	q := url.Values{"version": {strconv.FormatUint(version, 10)}}
-	return c.doJSON(ctx, http.MethodPost, "/services/"+url.PathEscape(id)+"/update", q, spec, nil)
+	hdr := ""
+	if !keepAuth {
+		hdr = serviceAuth(auth)
+	}
+	return c.doJSONAuth(ctx, http.MethodPost, "/services/"+url.PathEscape(id)+"/update", q, spec, nil, hdr)
+}
+
+// serviceAuth is the X-Registry-Auth header for a service. Without a login
+// it is an empty login ("{}"), which clears one the service had before:
+// leaving the header out would make Swarm keep the old one.
+func serviceAuth(auth *RegistryAuth) string {
+	if auth == nil {
+		return base64.URLEncoding.EncodeToString([]byte("{}"))
+	}
+	return auth.Encode()
 }
 
 func (c *Client) ServiceRemove(ctx context.Context, id string) error {

@@ -583,6 +583,7 @@ var (
 var appFieldProps = map[string]any{
 	"source":        enumProp("Where the code comes from.", "image", "git"),
 	"image":         prop("string", "Docker image for source=image, e.g. nginx:1.27 or ghcr.io/org/app:tag."),
+	"registry":      prop("string", "Private images: name of a registry login saved under Settings > Registries. Empty string for none. Leave out to use the saved login for the image's registry automatically."),
 	"git_url":       prop("string", "HTTPS repository URL for source=git."),
 	"git_branch":    prop("string", "Branch to build. Empty means the default branch."),
 	"git_token":     prop("string", "Access token for a private repository. Write-only."),
@@ -636,6 +637,7 @@ type appFields struct {
 	Ports        []store.Port   `json:"ports"`
 	AutoDomain   *bool          `json:"auto_domain"`
 	HTTPPort     *int           `json:"http_port"`
+	Registry     *string        `json:"registry"`
 }
 
 // inputFrom starts an appInput from the app's current settings, then
@@ -685,6 +687,35 @@ func inputFrom(a *store.App, f *appFields) appInput {
 	}
 	in.AutoDomain, in.HTTPPort = f.AutoDomain, f.HTTPPort
 	return in
+}
+
+// registryID resolves a registry login by name for create_app and
+// update_service: nil when not given, 0 for "".
+func (c *mcpCall) registryID(name *string) (*int64, error) {
+	if name == nil {
+		return nil, nil
+	}
+	n := strings.TrimSpace(*name)
+	var id int64
+	if n == "" {
+		return &id, nil
+	}
+	regs, err := c.s.store.Registries(c.ctx)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, g := range regs {
+		if strings.EqualFold(g.Name, n) {
+			id = g.ID
+			return &id, nil
+		}
+		names = append(names, fmt.Sprintf("%q (%s)", g.Name, g.Server))
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("there is no registry login named %q; ask the user to add one under Settings > Registries", n)
+	}
+	return nil, fmt.Errorf("there is no registry login named %q; saved logins: %s", n, strings.Join(names, ", "))
 }
 
 // envText turns a map into KEY=VALUE lines, sorted for stable output.
@@ -808,6 +839,11 @@ func init() {
 				}
 				if app.Source == "image" {
 					cfg["image"] = app.Image
+					if app.RegistryID != 0 {
+						if g, err := c.s.store.Registry(c.ctx, app.RegistryID); err == nil {
+							cfg["registryLogin"] = g.Name + " (" + g.Server + ")"
+						}
+					}
 				} else {
 					cfg["gitUrl"], cfg["gitBranch"], cfg["privateRepo"] = app.GitURL, app.GitBranch, app.HasGitToken
 					cfg["buildType"], cfg["buildPath"], cfg["dockerfile"] = app.BuildType, app.BuildPath, app.Dockerfile
@@ -1181,6 +1217,9 @@ func init() {
 				c.target = p.Name + "/" + a.Name
 				in := inputFrom(&store.App{Replicas: 1}, &a.appFields)
 				in.Name, in.Env = a.Name, envText(a.Env)
+				if in.RegistryID, err = c.registryID(a.Registry); err != nil {
+					return nil, err
+				}
 				raw, err := c.invoke(c.s.createApp, "POST", "/", map[string]string{"id": strconv.FormatInt(p.ID, 10)}, in)
 				if err != nil {
 					return nil, err
@@ -1286,6 +1325,9 @@ func init() {
 				}
 				in := inputFrom(app, &a.appFields)
 				in.ClearGitToken = a.ClearGitToken
+				if in.RegistryID, err = c.registryID(a.Registry); err != nil {
+					return nil, err
+				}
 				if _, err := c.invoke(c.s.updateApp, "PUT", "/", map[string]string{"id": strconv.FormatInt(app.ID, 10)}, in); err != nil {
 					return nil, err
 				}

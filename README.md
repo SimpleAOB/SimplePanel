@@ -48,7 +48,7 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
   `npm run build` → `dist`, and turn on the single-page-app fallback if
   needed. Files are served by nginx with dotfiles hidden and no directory
   listings.
-- **Deploy a Docker image** from Docker Hub, GHCR or any registry.
+- **Deploy a Docker image** from Docker Hub, GHCR, GitLab or any registry, public or private (saved registry logins, used by every node in the swarm).
 - **Domains with automatic HTTPS** via Let's Encrypt.
 - **Databases**: PostgreSQL, MySQL, MariaDB, MongoDB and Redis with your own
   or generated credentials, a

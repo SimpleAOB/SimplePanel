@@ -55,6 +55,8 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Update status, release notes | `GET /api/update` (owners and admins; `POST /api/update/check` asks GitHub now) |
 | Update SimplePanel | `POST /api/update {"version":"0.4.0"}` (the latest stable release only; 409 with `jobsRunning` while deploys or backups run, add `"force":true` to go ahead) |
 | Automatic updates | `PUT /api/update/settings {"auto":true,"hour":3}` (`hour` is server time, `-1` for any time) |
+| Registry logins (private images) | `GET /api/registries`; admins: `POST /api/registries {"name","server","username","password"}` (signs in first; add `"skipCheck":true` to skip), `PUT`/`DELETE /api/registries/{id}`, `POST /api/registries/test` |
+| Pick a service's registry login | `PUT /api/apps/{id}` with `"registryId": N` (`0` for none; leave it out to use the only saved login for the image's registry) |
 | Saved queries and your history | `GET`/`POST /api/apps/{id}/query/saved`, `DELETE /api/saved-queries/{id}`, `GET /api/apps/{id}/query/history` |
 
 A deploy returns at once, before the build finishes. Poll
