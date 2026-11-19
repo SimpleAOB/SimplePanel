@@ -24,6 +24,7 @@ import (
 	"github.com/SimpleAOB/SimplePanel/internal/monitor"
 	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
+	"github.com/SimpleAOB/SimplePanel/internal/update"
 )
 
 const (
@@ -48,6 +49,8 @@ type Server struct {
 	git       *gitprovider.Service
 	cron      *cron.Service
 	manifests manifestStates
+
+	updater *update.Updater
 
 	loginLimit   *limiter
 	hookLimit    *limiter
@@ -107,6 +110,11 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/tokens", s.createToken)
 	a("DELETE /api/tokens/{id}", s.deleteToken)
 	a("GET /api/audit", s.listAudit)
+
+	a("GET /api/update", s.getUpdate)
+	a("POST /api/update", s.startUpdate)
+	a("POST /api/update/check", s.checkUpdate)
+	a("PUT /api/update/settings", s.putUpdateSettings)
 
 	a("GET /api/users", s.listUsers)
 	a("POST /api/users", s.createUser)

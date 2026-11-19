@@ -22,6 +22,7 @@ import (
 	"github.com/SimpleAOB/SimplePanel/internal/monitor"
 	"github.com/SimpleAOB/SimplePanel/internal/notify"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
+	"github.com/SimpleAOB/SimplePanel/internal/update"
 	"github.com/SimpleAOB/SimplePanel/internal/web"
 )
 
@@ -152,6 +153,17 @@ func run(log *slog.Logger) error {
 	dm.StartRunArchiver(ctx)
 	srv.Use(backups, mon, notifier)
 	srv.StartJanitor(ctx)
+
+	updater := update.New(update.Config{
+		Repo:    env("SP_UPDATE_REPO", update.DefaultRepo),
+		Image:   env("SP_UPDATE_IMAGE", update.DefaultImage),
+		Service: env("SP_PANEL_SERVICE", "simplepanel"),
+		Version: version,
+		DataDir: dataDir,
+		APIBase: env("SP_UPDATE_API", ""), // GitHub API; for testing
+	}, st, dc, notifier, log)
+	updater.Run(ctx)
+	srv.UseUpdater(updater)
 
 	hs := &http.Server{
 		Addr:              listen,

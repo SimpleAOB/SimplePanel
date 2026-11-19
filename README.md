@@ -22,6 +22,12 @@ The installer sets up Docker, Docker Swarm, Traefik and SimplePanel. It
 downloads everything before changing the server, and it is safe to run
 again: to upgrade, or to finish an install that stopped part way.
 
+Once installed, SimplePanel updates itself: owners and admins see an
+"Update available" banner when a new stable release is out, with its release
+notes and a one-click update. Swarm swaps the panel's container, apps keep
+running, and if the new version fails its health check Swarm puts the old one
+back. Turn on Advanced view for automatic updates at an hour you choose.
+
 | Variable        | Default                                  | Purpose                                   |
 | --------------- | ---------------------------------------- | ----------------------------------------- |
 | `SP_IMAGE`      | latest release, else `:edge` (main)      | SimplePanel image to run                  |

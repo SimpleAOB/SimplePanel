@@ -163,6 +163,7 @@ var activityActions = map[string]string{
 	"PUT /api/cron/{id}":                      "change cron job",
 	"DELETE /api/cron/{id}":                   "remove cron job",
 	"POST /api/cron/{id}/run":                 "run cron job",
+	"PUT /api/update/settings":                "change update settings",
 }
 
 // activityTarget names what a request acts on, looked up before the

@@ -44,6 +44,9 @@ const (
 	AlertResolved    = "alert.resolved"
 	CronFailed       = "cron.failed"
 	PreviewReady     = "preview.ready"
+	UpdateAvailable  = "panel.update_available"
+	PanelUpdated     = "panel.updated"
+	UpdateFailed     = "panel.update_failed"
 	Test             = "test"
 )
 
@@ -68,6 +71,9 @@ var EventTypes = []EventType{
 	{AlertMemory, "High memory", true},
 	{AlertDisk, "Disk almost full", true},
 	{AlertResolved, "Alert resolved", true},
+	{UpdateAvailable, "SimplePanel update available", true},
+	{PanelUpdated, "SimplePanel updated", true},
+	{UpdateFailed, "SimplePanel update failed", true},
 }
 
 func validEvent(e string) bool {

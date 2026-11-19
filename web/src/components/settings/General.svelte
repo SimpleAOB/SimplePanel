@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../../lib/api.js';
+  import Updates from './Updates.svelte';
 
   let panelDomain = $state('');
   let wildcard = $state('');
@@ -44,6 +45,8 @@
     }
   }
 </script>
+
+<Updates />
 
 <form class="card" onsubmit={saveDomain}>
   <h2>Panel domain</h2>
