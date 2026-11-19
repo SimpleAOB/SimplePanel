@@ -9,9 +9,26 @@
   import AppView from './AppView.svelte';
   import Settings from './Settings.svelte';
   import DetailPanel from './DetailPanel.svelte';
+  import UpdateBanner from './UpdateBanner.svelte';
+  import UpdateDialog from './UpdateDialog.svelte';
+  import { isAdmin } from '../lib/state.svelte.js';
+  import { upd, loadUpdate, follow } from '../lib/update.svelte.js';
 
   onMount(() => {
     loadProjects();
+    if (!isAdmin()) return;
+    // The server checks GitHub itself every few hours; this only reads
+    // what it found.
+    loadUpdate().then((st) => {
+      // Reopened the page mid-update: keep following it.
+      const j = st?.job;
+      if (j && (j.state === 'running' || j.state === 'restarting') && !upd.progress) {
+        upd.progress = { target: j.to, phase: 'working', step: j.step, error: '' };
+        follow(j.to);
+      }
+    });
+    const t = setInterval(loadUpdate, 30 * 60 * 1000);
+    return () => clearInterval(t);
   });
 
   // Reload the sidebar's app list whenever the project changes, and poll
@@ -41,6 +58,7 @@
     <button class="scrim" aria-label="Close menu" onclick={() => (ui.navOpen = false)}></button>
   {/if}
   <main class="main">
+    <UpdateBanner />
     {#if ui.route.view === 'home'}
       <Home />
     {:else if ui.route.view === 'settings'}
@@ -57,6 +75,9 @@
     {#key ui.route.appId}<DetailPanel />{/key}
   {/if}
 </div>
+{#if upd.open && (upd.status?.check?.latest || upd.progress)}
+  <UpdateDialog />
+{/if}
 
 <style>
   .shell {

@@ -688,3 +688,47 @@ func demux(r io.Reader, w io.Writer) error {
 		}
 	}
 }
+
+// ---- Self-update helpers ----
+// The panel updates its own service with the raw spec, so fields this
+// client doesn't model (health checks, mount options, ...) survive.
+
+// RawService is a service with its spec left as raw JSON.
+type RawService struct {
+	ID           string
+	Version      struct{ Index uint64 }
+	Spec         json.RawMessage
+	UpdateStatus *struct {
+		State   string
+		Message string
+	}
+}
+
+func (c *Client) ServiceInspectRaw(ctx context.Context, name string) (*RawService, error) {
+	var s RawService
+	if err := c.doJSON(ctx, http.MethodGet, "/services/"+url.PathEscape(name), nil, nil, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// ServiceUpdateRaw sends a raw spec. Swarm keeps the previous spec, so a
+// failed update can roll back to it.
+func (c *Client) ServiceUpdateRaw(ctx context.Context, id string, version uint64, spec json.RawMessage) error {
+	q := url.Values{"version": {strconv.FormatUint(version, 10)}}
+	return c.doJSON(ctx, http.MethodPost, "/services/"+url.PathEscape(id)+"/update", q, spec, nil)
+}
+
+// ImageLabels returns an image's labels (OCI annotations such as
+// org.opencontainers.image.version).
+func (c *Client) ImageLabels(ctx context.Context, ref string) (map[string]string, error) {
+	var img struct {
+		Config struct {
+			Labels map[string]string
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/images/"+url.PathEscape(ref)+"/json", nil, nil, &img); err != nil {
+		return nil, err
+	}
+	return img.Config.Labels, nil
+}

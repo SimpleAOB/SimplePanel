@@ -460,11 +460,49 @@ The script:
 
 Re-running the script upgrades SimplePanel in place.
 
+## Updating from inside the panel
+
+`internal/update` follows the **stable channel**: the newest GitHub release
+of `SimpleAOB/SimplePanel` that isn't a draft or pre-release. The server
+checks every 6 hours (and when an admin presses Check now) and stores the
+result; browsers only read it. A new release shows an admin-only banner and
+sends one "SimplePanel update available" notification.
+
+An update, started by an owner or admin (or automatically, if turned on):
+
+1. pulls `ghcr.io/simpleaob/simplepanel:<version>`;
+2. refuses the image unless its OCI labels name that version, this
+   repository and the commit the release tag points at, then pins it by
+   digest (`:0.4.0@sha256:...`);
+3. saves a copy of the database to `/data/updates` (the newest 3 are kept);
+4. updates the panel's own Swarm service with the pinned image, a health
+   check that runs every 2 seconds while starting, and
+   `UpdateConfig {Order: stop-first, FailureAction: rollback, Monitor: 30s}`.
+
+The spec is edited as raw JSON so fields SimplePanel doesn't model survive.
+Swarm, not the panel, carries the update out, so it completes although the
+old panel is stopped part way. The panel is replaced **stop-first**: it
+publishes port 3000 in host mode and SQLite has one writer, so two copies
+can't run at once. It is away for a few seconds; apps, databases and Traefik
+are separate services and keep running. If the new version fails its health
+check or crashes within 30 seconds, Swarm rolls back to the previous spec.
+
+The job is saved in the `settings` table before the hand-over. Whichever
+version boots next compares its own version with the job and records
+"updated" or "rolled back" in the activity log and as a notification.
+
+Only the latest offered release can be installed, so the API can't be used
+to downgrade. Builds of `main` (`:edge`) have no version number: they are
+offered a release only when GitHub's compare API says the release contains
+the running image's commit. Custom images (`SP_IMAGE` pointing elsewhere)
+aren't updated in-panel.
+
 ## Repository layout
 
 ```
 cmd/simplepanel/      main entrypoint
 cmd/sp/               the sp command-line client
+internal/update/      in-panel updates: release check, verify, Swarm hand-over
 internal/api/         HTTP handlers, auth, middleware
 internal/cron/        cron job scheduler
 internal/gitprovider/ GitHub App and GitLab API clients, webhook parsing
