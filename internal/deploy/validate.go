@@ -138,6 +138,25 @@ func CleanRelPath(s string) (string, error) {
 }
 
 // ValidHost checks a domain name (no IPs, no wildcards, no ports).
+// CleanHost turns what people paste into a domain field into a bare host
+// name: "https://WWW.Example.com/path" becomes "www.example.com".
+func CleanHost(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	if h, p, ok := strings.Cut(s, ":"); ok && p != "" && strings.Trim(p, "0123456789") == "" {
+		s = h
+	}
+	return strings.TrimSuffix(s, ".")
+}
+
 func ValidHost(s string) error {
 	if len(s) > 253 || net.ParseIP(s) != nil {
 		return errors.New("enter a domain name like app.example.com")
@@ -148,7 +167,7 @@ func ValidHost(s string) error {
 	}
 	for _, l := range labels {
 		if !labelRe.MatchString(l) {
-			return errors.New("enter a domain name like app.example.com (lowercase)")
+			return errors.New("enter a domain name like app.example.com: letters, numbers, hyphens and dots only")
 		}
 	}
 	return nil

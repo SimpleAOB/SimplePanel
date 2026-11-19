@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '../../lib/api.js';
   import Updates from './Updates.svelte';
+  import DomainStatus from '../DomainStatus.svelte';
 
   let panelDomain = $state('');
   let wildcard = $state('');
@@ -10,12 +11,16 @@
   let wmsg = $state('');
   let werr = $state('');
   let ip = $state('');
+  let savedPanel = $state('');
+  let savedWildcard = $state('');
 
   onMount(async () => {
     const s = await api.get('/system');
     panelDomain = s.panelDomain || '';
     wildcard = s.wildcardDomain || '';
-    ip = location.hostname;
+    savedPanel = panelDomain;
+    savedWildcard = wildcard;
+    ip = s.serverIp || location.hostname;
   });
 
   async function saveDomain(e) {
@@ -23,6 +28,7 @@
     msg = err = '';
     try {
       await api.put('/settings', { panelDomain });
+      savedPanel = panelDomain;
       msg = panelDomain
         ? `Saved. Once DNS for ${panelDomain} points at this server, open https://${panelDomain}.`
         : 'Saved. The panel is only reachable on port 3000.';
@@ -37,6 +43,7 @@
     try {
       const r = await api.put('/settings', { wildcardDomain: wildcard });
       wildcard = r.wildcardDomain ?? wildcard;
+      savedWildcard = wildcard;
       wmsg = wildcard
         ? `Saved. Apps now get addresses like web-shop.${wildcard}.`
         : 'Saved. Automatic subdomains are off.';
@@ -58,6 +65,7 @@
     </label>
     <button class="btn primary">Save</button>
   </div>
+  {#if savedPanel}{#key savedPanel}<DomainStatus host={savedPanel} serverIp={ip} />{/key}{/if}
   {#if msg}<p class="ok">{msg}</p>{/if}
   {#if err}<p class="error">{err}</p>{/if}
 </form>
@@ -79,6 +87,7 @@
     Add a DNS record <code>*.{wildcard || 'apps.example.com'}</code> of type A pointing at this server{ip ? ` (${ip})` : ''}.
     Certificates are issued for each subdomain the first time it's used. Leave empty to turn this off.
   </small>
+  {#if savedWildcard}{#key savedWildcard}<DomainStatus host={'check.' + savedWildcard} https={false} serverIp={ip} />{/key}{/if}
   {#if wmsg}<p class="ok">{wmsg}</p>{/if}
   {#if werr}<p class="error">{werr}</p>{/if}
 </form>

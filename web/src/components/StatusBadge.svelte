@@ -6,13 +6,14 @@
     stopped: 'Stopped',
     failing: 'Failing',
     not_deployed: 'Not deployed',
+    deploy_failed: 'Deploy failed',
     unknown: 'Unknown',
   };
   let state = $derived(status?.state || 'unknown');
 </script>
 
 <span class="badge" title={status?.message || ''}>
-  <span class="dot {state}"></span>
+  <span class="dot {state === 'deploy_failed' ? 'failed' : state}"></span>
   {labels[state] || state}
   {#if status && status.desired > 0}<span class="faint">{status.running}/{status.desired}</span>{/if}
 </span>

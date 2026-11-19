@@ -95,6 +95,12 @@
       const d = await api.get(`/deployments/${panel.deploymentId}`);
       dep = d.appId === aid ? d : null;
       error = '';
+      // Keep the picker's label in step with the deployment it shows.
+      if (dep) {
+        const i = deps.findIndex((x) => x.id === dep.id);
+        if (i < 0) loadDeps();
+        else if (deps[i].status !== dep.status) deps[i] = { ...deps[i], status: dep.status };
+      }
     } catch (err) {
       error = err.message;
     }

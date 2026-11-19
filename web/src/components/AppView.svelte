@@ -1,7 +1,9 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon } from '../lib/state.svelte.js';
+  import { ui, data, go, loadApps, setPanelOpen, setAdvanced, showDeployment, showRun, timeAgo, appIcon, isAdmin } from '../lib/state.svelte.js';
+  import { explainFailure, DOCKERFILE_HELP } from '../lib/explain.js';
+  import DomainStatus from './DomainStatus.svelte';
   import { formFromApp, payload } from '../lib/appform.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
@@ -24,7 +26,7 @@
   let form = $state(null);
   let env = $state('');
   let saved = $state('');
-  let newDomain = $state({ host: '', port: 80, https: true });
+  let newDomain = $state({ host: '', port: '', https: true });
   let domainErr = $state('');
   let confirmName = $state('');
   let reveal = $state(false);
@@ -46,9 +48,10 @@
     ['metrics', 'Metrics'],
     ...(detail?.canQuery ? [['query', 'Query']] : []),
     ...(detail?.backupKind && !isPreview ? [['backups', 'Backups']] : []),
-    ...(canDeploy && !isPreview ? [['environment', 'Environment']] : []),
-    ['deployments', 'Deployments'],
-    ...(!isPreview ? [['cron', 'Cron jobs']] : []),
+    // Databases rarely need these, so they only show in Advanced view.
+    ...(canDeploy && !isPreview && (!isDb || ui.advanced) ? [['environment', 'Environment']] : []),
+    ...(!isDb || ui.advanced ? [['deployments', 'Deployments']] : []),
+    ...(!isPreview && (!isDb || ui.advanced) ? [['cron', 'Cron jobs']] : []),
     ['settings', 'Settings'],
   ]);
   // Internal addresses: every service joins its project's private network
@@ -57,7 +60,7 @@
     if (!detail) return 0;
     if (isDb) return detail.database?.port || 0;
     const a = detail.app;
-    if (a.httpPort > 0 || detail.domains.length) return detail.autoPort;
+    if (a.httpPort > 0 || detail.domains.length || a.imagePort > 0) return detail.autoPort;
     if (a.buildType === 'static') return 80;
     return 0;
   });
@@ -71,6 +74,78 @@
       ['Full name', `${scheme}${detail.serviceName}${tail}${end}`, 'The Swarm service name'],
     ];
   });
+  // The last deploy failed and nothing newer replaced it.
+  let failed = $derived(detail?.lastDeployment?.status === 'failed' ? detail.lastDeployment : null);
+  let failure = $derived(failed ? explainFailure(failed.reason || '') : null);
+  let badge = $derived(failed && detail?.status?.state === 'not_deployed' ? { state: 'deploy_failed' } : detail?.status);
+  // The port a domain sends traffic to: its own, or the image's (automatic).
+  const routePort = (d) => d.port || detail?.app?.imagePort || 80;
+  let tokenFix = $state('');
+
+  async function saveToken(e) {
+    e.preventDefault();
+    await saveApp({ ...formFromApp(detail.app), gitToken: tokenFix.trim() }, true);
+    tokenFix = '';
+  }
+
+  async function setDomainPort(d, port) {
+    domainErr = '';
+    try {
+      await api.put(`/domains/${d.id}`, { port: Number(port) || 0 });
+      editPort = 0;
+      await refresh(false);
+    } catch (err) {
+      domainErr = err.message;
+    }
+  }
+  let editPort = $state(0);
+  let editPortValue = $state('');
+
+  // "Use in an app": put this database's URL into another app's variables.
+  let useOpen = $state(false);
+  let useApp = $state(0);
+  let useVar = $state('');
+  let useMsg = $state('');
+  let otherApps = $derived(data.apps.filter((x) => (!x.kind || x.kind === 'app') && !x.parentAppId));
+
+  async function useInApp(e) {
+    e.preventDefault();
+    useMsg = '';
+    await action('use', async () => {
+      const target = otherApps.find((x) => x.id === Number(useApp));
+      const name = (useVar || urlVar).trim();
+      const r = await api.patch(`/apps/${useApp}/env?deploy=1`, { set: { [name]: detail.database.url } });
+      if (r.deployment) showDeployment(r.deployment.id);
+      useMsg = `Added ${name} to ${target?.name || 'the app'} and started a deploy.`;
+      useOpen = false;
+    });
+  }
+
+  // Environment tab: insert another database's connection URL.
+  async function insertDb(id) {
+    if (!id) return;
+    try {
+      const d = await api.get(`/apps/${id}`);
+      const v = { mongo: 'MONGODB_URI', redis: 'REDIS_URL' }[d.database?.engine] || 'DATABASE_URL';
+      const line = `${v}=${d.database.url}`;
+      env = env && !env.endsWith('\n') ? `${env}\n${line}` : `${env || ''}${line}`;
+    } catch (err) {
+      error = err.message;
+    }
+  }
+  let dbs = $derived(data.apps.filter((x) => x.kind && x.kind !== 'app'));
+  let serverIp = $state('');
+  onMount(async () => {
+    if (!data.apps.length || data.appsFor !== pid) loadApps(pid).catch(() => {});
+    try {
+      const s = await api.get('/system');
+      serverIp = s.serverIp || '';
+    } catch {
+      /* not needed */
+    }
+    if (!serverIp && /^[\d.]+$|:/.test(location.hostname) && location.hostname !== 'localhost') serverIp = location.hostname;
+  });
+
   let autoBusy = $state(false);
   let autoPort = $state(0);
 
@@ -152,7 +227,7 @@
 
   function saveEnv(e) {
     e.preventDefault();
-    saveApp({ ...formFromApp(detail.app), env }, true);
+    saveApp({ ...formFromApp(detail.app), env }, e.submitter?.value !== 'save');
   }
 
   function saveSettings(e) {
@@ -166,7 +241,7 @@
     try {
       await api.post(`/apps/${aid}/domains`, {
         host: newDomain.host.trim().toLowerCase(),
-        port: Number(newDomain.port) || 80,
+        port: Number(newDomain.port) || 0,
         https: newDomain.https,
       });
       newDomain = { host: '', port: newDomain.port, https: true };
@@ -232,9 +307,9 @@
 {:else}
   <Topbar>
     {detail.app.name}
-    <StatusBadge status={detail.status} />
+    <StatusBadge status={badge} />
     {#snippet actions()}
-      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy}><Icon name="refresh" size={16} /> Deploy</button>{/if}
+      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><Icon name="refresh" size={16} /> {isDb ? 'Apply changes' : 'Deploy'}</button>{/if}
       <button
         class="btn icon"
         class:active={ui.panelOpen}
@@ -252,6 +327,37 @@
 
   <div class="page" class:wide={tab === 'query'}>
     {#if error}<p class="error">{error}</p>{/if}
+    {#if failed && failure && !isPreview}
+      <section class="card failure" role="alert">
+        <div class="row between">
+          <h3>{failure.title}</h3>
+          <button class="btn small" onclick={() => showDeployment(failed.id)}>Show build log</button>
+        </div>
+        <p class="muted">{failure.hint}</p>
+        {#if detail.status.state === 'running'}
+          <small class="faint">The previous version is still running, so visitors don't notice.</small>
+        {/if}
+        {#if canDeploy && failure.kind === 'git-auth'}
+          <div class="row fix">
+            {#if isAdmin()}<a class="btn" href="#/settings/git">Connect GitHub or GitLab</a>{/if}
+            <form class="row tight tokenform" onsubmit={saveToken}>
+              <input type="password" bind:value={tokenFix} placeholder="Paste an access token" autocomplete="off" aria-label="Access token" required />
+              <button class="btn primary" disabled={!!busy}>Save and deploy</button>
+            </form>
+          </div>
+          <small class="faint">A token with read access to the repository, for example a GitHub fine-grained token with Contents: Read.</small>
+        {:else if canDeploy && (failure.kind === 'server-app' || failure.kind === 'no-dockerfile')}
+          <div class="row fix">
+            <a class="btn" href={DOCKERFILE_HELP} target="_blank" rel="noopener noreferrer">Example Dockerfiles</a>
+            <a class="btn ghost" href="#/p/{pid}/a/{aid}/settings">Change the build type</a>
+          </div>
+        {:else if canDeploy && (failure.kind === 'branch' || failure.kind === 'build-path')}
+          <div class="row fix"><button class="btn" onclick={() => { setAdvanced(true); go(`/p/${pid}/a/${aid}/settings`); }}>Open settings</button></div>
+        {:else if failure.kind === 'registry' && isAdmin()}
+          <div class="row fix"><a class="btn" href="#/settings/registries">Add a registry login</a></div>
+        {/if}
+      </section>
+    {/if}
     {#if detail.status.message && detail.status.state === 'failing'}
       <p class="error">
         The app is failing to start: {detail.status.message}
@@ -291,6 +397,7 @@
         </div>
       </section>
 
+      {#if !isDb}
       <section class="card">
         <h3>Internal address</h3>
         <p class="muted">
@@ -311,6 +418,7 @@
           <small class="faint">Add the port your app listens on, for example <code>http://{detail.app.name}:3000/</code>. Adding a domain sets it here.</small>
         {/if}
       </section>
+      {/if}
 
       {#if isDb}
         {@const db = detail.database}
@@ -319,7 +427,7 @@
             <h3>Connection</h3>
             <button class="btn ghost small" onclick={() => (reveal = !reveal)}><Icon name="eye" size={16} /> {reveal ? 'Hide' : 'Show'} secrets</button>
           </div>
-          <p class="muted">Apps in this project can reach the database at this address. It is not exposed to the internet.</p>
+          <p class="muted">Apps in this project connect with these details. The database is not reachable from the internet.</p>
           <dl class="conn">
             {#each [['Host', db.host, false], ['Port', String(db.port), false], ['Database', db.database, false], ['User', db.user, false], ['Password', db.password, true], ...(db.rootPassword ? [['Root password', db.rootPassword, true]] : [])] as [label, val, secret]}
               <dt>{label}</dt>
@@ -336,8 +444,32 @@
               <input type="text" readonly class="mono" value={reveal ? db.url : db.url.replace(`:${encodeURIComponent(db.password)}@`, ':••••••@')} aria-label="Connection URL" />
               <button class="btn" onclick={() => copy(db.url, 'url')}>{copied === 'url' ? 'Copied' : 'Copy'}</button>
             </div>
-            <small class="faint">Use it as {urlVar} in your app's Environment tab. Changing the password variables after the first start does not change the database's password.</small>
+            <small class="faint">Apps usually read it from a variable named {urlVar}. The short host <code>{detail.app.name}</code> works too.</small>
           </div>
+          {#if canDeploy}
+            {#if useMsg}<p class="ok">{useMsg}</p>{/if}
+            {#if !useOpen}
+              <div><button class="btn primary" onclick={() => { useOpen = true; useApp = otherApps[0]?.id || 0; useVar = urlVar; }}>Use in an app</button></div>
+            {:else if otherApps.length === 0}
+              <p class="muted">There are no apps in this project yet. <a href="#/p/{pid}/new">Create one</a>, then come back to connect it.</p>
+            {:else}
+              <form class="row use" onsubmit={useInApp}>
+                <label class="field">
+                  <span>App</span>
+                  <select bind:value={useApp}>
+                    {#each otherApps as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Variable</span>
+                  <input type="text" bind:value={useVar} class="mono" spellcheck="false" />
+                </label>
+                <button class="btn primary" disabled={!!busy}>Add and redeploy</button>
+                <button type="button" class="btn ghost" onclick={() => (useOpen = false)}>Cancel</button>
+              </form>
+              <small class="faint">Adds the connection URL to the app's environment variables and redeploys it.</small>
+            {/if}
+          {/if}
         </section>
 
         {#if detail.aiAccessSupported !== false}
@@ -387,15 +519,36 @@
           {/if}
         {/if}
         {#if detail.domains.length === 0 && !detail.autoHost}
-          <p class="muted">No domains yet. Add one to make this app reachable over HTTPS.</p>
+          <p class="muted">
+            No domains yet, so this app is only reachable by other apps in this project. Add a domain to put it on the internet with HTTPS.
+            {#if !detail.wildcard && isAdmin()}Or set up <a href="#/settings">automatic subdomains</a> once, and every app gets an address.{/if}
+          </p>
         {/if}
         <ul class="domains">
           {#each detail.domains as d (d.id)}
             <li>
-              <Icon name="globe" size={16} />
-              <a href="{d.https ? 'https' : 'http'}://{d.host}" target="_blank" rel="noopener noreferrer">{d.host}</a>
-              <span class="faint">→ port {d.port}{d.https ? '' : ' (HTTP only)'}</span>
-              {#if canDeploy}<button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>{/if}
+              <div class="dline">
+                <Icon name="globe" size={16} />
+                <a href="{d.https ? 'https' : 'http'}://{d.host}" target="_blank" rel="noopener noreferrer">{d.host}</a>
+                {#if editPort === d.id}
+                  <form class="row tight inline" onsubmit={(e) => { e.preventDefault(); setDomainPort(d, editPortValue); }}>
+                    <input type="number" min="0" max="65535" bind:value={editPortValue} placeholder="auto" aria-label="App port" class="portin" />
+                    <button class="btn small primary">Save</button>
+                    <button type="button" class="btn ghost small" onclick={() => (editPort = 0)}>Cancel</button>
+                  </form>
+                {:else}
+                  <span class="faint">→ port {routePort(d)}{d.port ? '' : ' (automatic)'}{d.https ? '' : ' · HTTP only'}</span>
+                  {#if canDeploy}<button class="btn ghost small" onclick={() => { editPort = d.id; editPortValue = d.port || ''; }}>Change port</button>{/if}
+                {/if}
+                {#if canDeploy}<button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>{/if}
+              </div>
+              {#if d.port && detail.app.imagePort && d.port !== detail.app.imagePort}
+                <p class="warn">
+                  The app's image listens on port {detail.app.imagePort}, but this domain sends visitors to port {d.port}.
+                  {#if canDeploy}<button class="linkish" onclick={() => setDomainPort(d, 0)}>Send it to {detail.app.imagePort}</button>{/if}
+                </p>
+              {/if}
+              <DomainStatus host={d.host} https={d.https} {serverIp} />
             </li>
           {/each}
         </ul>
@@ -407,7 +560,7 @@
           </label>
           <label class="field port">
             <span>App port</span>
-            <input type="number" min="1" max="65535" bind:value={newDomain.port} />
+            <input type="number" min="0" max="65535" bind:value={newDomain.port} placeholder={detail.app.imagePort ? `auto (${detail.app.imagePort})` : 'auto'} />
           </label>
           {#if ui.advanced}
             <label class="check"><input type="checkbox" bind:checked={newDomain.https} /> HTTPS</label>
@@ -416,7 +569,10 @@
         </form>
         {/if}
         {#if domainErr}<p class="error">{domainErr}</p>{/if}
-        {#if canDeploy}<small class="faint">Point the domain's DNS (A record) at this server. Certificates are issued automatically.</small>{/if}
+        {#if canDeploy}<small class="faint">
+          First add an A record for the domain pointing at {serverIp ? serverIp : "this server's IP address"}. HTTPS certificates are issued automatically.
+          Leave the port empty to use the one the app listens on.
+        </small>{/if}
       </section>
 
       {#if detail.app.source === 'git' && !isPreview}
@@ -453,11 +609,20 @@
     {:else if tab === 'environment' && canDeploy}
       <form class="card" onsubmit={saveEnv}>
         <h3>Environment variables</h3>
-        <p class="muted">One <code>KEY=value</code> per line. Lines starting with # are ignored.</p>
+        <p class="muted">One <code>KEY=value</code> per line, or paste a whole <code>.env</code> file. Lines starting with # are ignored. Changes apply when the app deploys.</p>
         <textarea bind:value={env} rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;NODE_ENV=production"></textarea>
-        <div class="row end">
-          {#if saved}<span class="ok">{saved}</span>{/if}
-          <button class="btn primary" disabled={!!busy}>Save and deploy</button>
+        <div class="row between envbar">
+          {#if dbs.length}
+            <select class="insert" aria-label="Insert a database's connection URL" onchange={(e) => { insertDb(Number(e.currentTarget.value)); e.currentTarget.value = ''; }}>
+              <option value="">Insert a database URL…</option>
+              {#each dbs as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+            </select>
+          {:else}<span></span>{/if}
+          <div class="row end">
+            {#if saved}<span class="ok">{saved}</span>{/if}
+            <button class="btn" name="action" value="save" disabled={!!busy}>Save</button>
+            <button class="btn primary" name="action" value="deploy" disabled={!!busy}>Save and deploy</button>
+          </div>
         </div>
       </form>
     {:else if tab === 'deployments'}
@@ -496,7 +661,7 @@
         <h3>App settings</h3>
         <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} />
         {#if !ui.advanced}
-          <small class="faint">Turn on Advanced view (bottom left) for branch, tokens, replicas, limits, volumes and ports.</small>
+          <div><button type="button" class="linkish" onclick={() => setAdvanced(true)}>Show more options</button> <small class="faint">(access token, build path, replicas, limits, volumes, ports)</small></div>
         {/if}
         <div class="row end">
           {#if saved}<span class="ok">{saved}</span>{/if}
@@ -607,16 +772,13 @@
   }
   .domains li {
     display: flex;
-    align-items: center;
-    gap: var(--sp-space-2);
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--sp-space-1);
+    padding: var(--sp-space-2) 0;
+    border-bottom: 1px solid var(--sp-border);
   }
-  .domains li a {
-    font-weight: var(--sp-weight-medium);
-    overflow-wrap: anywhere;
-  }
-  .domains li .btn {
-    margin-left: auto;
+  .domains li:last-child {
+    border-bottom: 0;
   }
   .host {
     flex: 3 1 200px !important;
@@ -714,6 +876,58 @@
   .danger-zone {
     border-color: var(--sp-danger);
   }
+  .failure {
+    border-color: var(--sp-danger);
+  }
+  .failure h3 {
+    color: var(--sp-danger);
+  }
+  .fix {
+    align-items: center;
+    gap: var(--sp-space-2);
+  }
+  .envbar {
+    flex-wrap: wrap;
+  }
+  .envbar .insert {
+    flex: 0 1 260px;
+    width: auto;
+  }
+  .envbar .end {
+    margin-left: auto;
+  }
+  .tokenform {
+    flex: 1 1 260px;
+  }
+  .warn {
+    margin: 0;
+    color: var(--sp-warning);
+    font-size: var(--sp-text-sm);
+  }
+  .dline {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .dline > a {
+    font-weight: var(--sp-weight-medium);
+    overflow-wrap: anywhere;
+  }
+  .dline .btn:first-of-type {
+    margin-left: auto;
+  }
+  .inline {
+    gap: var(--sp-space-2);
+  }
+  .portin {
+    width: 110px;
+  }
+  .use {
+    align-items: flex-end;
+  }
+
   .preview-banner {
     border-color: var(--sp-accent);
   }

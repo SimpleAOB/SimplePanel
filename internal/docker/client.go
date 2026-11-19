@@ -732,3 +732,35 @@ func (c *Client) ImageLabels(ctx context.Context, ref string) (map[string]string
 	}
 	return img.Config.Labels, nil
 }
+
+// ImageExposedPorts returns the TCP ports an image declares with EXPOSE,
+// sorted ascending.
+func (c *Client) ImageExposedPorts(ctx context.Context, ref string) ([]int, error) {
+	var img struct {
+		Config struct {
+			ExposedPorts map[string]struct{}
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/images/"+url.PathEscape(ref)+"/json", nil, nil, &img); err != nil {
+		return nil, err
+	}
+	return ParseExposedPorts(img.Config.ExposedPorts), nil
+}
+
+// ParseExposedPorts turns Docker's {"8080/tcp":{}} map into sorted TCP ports.
+func ParseExposedPorts(m map[string]struct{}) []int {
+	var out []int
+	for k := range m {
+		p, proto, _ := strings.Cut(k, "/")
+		if proto != "" && proto != "tcp" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			continue
+		}
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out
+}

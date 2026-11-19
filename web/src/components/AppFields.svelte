@@ -93,6 +93,12 @@
     {/if}
   {:else}
     <RepoPicker bind:value />
+    {#if !value.gitProviderId}
+      <label class="field">
+        <span>Branch <span class="opt">(optional)</span></span>
+        <input type="text" bind:value={value.gitBranch} placeholder="The repository's default branch" spellcheck="false" />
+      </label>
+    {/if}
     <div class="field">
       <div class="label-row">
         <span>Build</span>
@@ -109,7 +115,7 @@
       </div>
       <small>
         {#if value.buildType === 'auto'}
-          Uses the repository's Dockerfile if it has one, otherwise serves it as a static site.
+          Uses the repository's Dockerfile if it has one. Without one, site generators like Vite or Hugo are built for you and plain files are served as a website. Apps that run a server need a Dockerfile.
         {:else if value.buildType === 'dockerfile'}
           Builds the Dockerfile in the repository.
         {:else}
@@ -121,10 +127,6 @@
     {#if ui.advanced}
       {#if !value.gitProviderId}
       <div class="row">
-        <label class="field">
-          <span>Branch</span>
-          <input type="text" bind:value={value.gitBranch} placeholder="default branch" />
-        </label>
         <label class="field">
           <span>Access token</span>
           <input type="password" bind:value={value.gitToken} autocomplete="off" placeholder={hasToken ? 'saved (leave blank to keep)' : 'for private repositories'} />
@@ -297,6 +299,12 @@
     align-items: center;
     font-size: var(--sp-text-sm);
     color: var(--sp-text-muted);
+  }
+  .opt {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
+    color: var(--sp-text-faint);
   }
   .with-icon {
     display: inline-flex;

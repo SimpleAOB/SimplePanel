@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -184,6 +186,7 @@ func (m *Manager) run(appID, depID int64) {
 		if err != nil {
 			return err
 		}
+		m.detectPort(ctx, app, image, lb)
 		if err := m.applyService(ctx, app, image, auth, lb); err != nil {
 			return err
 		}
@@ -208,6 +211,71 @@ func (m *Manager) run(appID, depID int64) {
 				d.Log = err.Error() // the reason, not the whole log
 			}
 			m.OnDeploy(app, d)
+		}
+	}
+}
+
+// FailureReason is the reason a deployment log ends with ("" if none).
+func FailureReason(log string) string {
+	const marker = "==> Deployment failed: "
+	i := strings.LastIndex(log, marker)
+	if i < 0 {
+		return ""
+	}
+	r := log[i+len(marker):]
+	if j := strings.IndexByte(r, '\n'); j >= 0 {
+		r = r[:j]
+	}
+	return strings.TrimSpace(r)
+}
+
+// PickPort chooses the port web traffic should go to from the ports an
+// image exposes: a common web port if there is one, else the lowest.
+func PickPort(ports []int) int {
+	for _, want := range []int{80, 8080, 3000, 8000, 5000} {
+		for _, p := range ports {
+			if p == want {
+				return p
+			}
+		}
+	}
+	if len(ports) > 0 {
+		return ports[0]
+	}
+	return 0
+}
+
+// detectPort records the port the image listens on, so domains set to
+// "automatic" route to it, and warns about domains pointing elsewhere.
+func (m *Manager) detectPort(ctx context.Context, app *store.App, image string, lb *logBuf) {
+	if app.IsDatabase() {
+		return
+	}
+	ports, err := m.docker.ImageExposedPorts(ctx, image)
+	if err != nil {
+		return
+	}
+	p := PickPort(ports)
+	if p != app.ImagePort {
+		if err := m.store.SetImagePort(context.Background(), app.ID, p); err != nil {
+			m.log.Warn("saving image port", "app", app.ServiceName(), "err", err)
+		}
+		app.ImagePort = p
+	}
+	list := make([]string, len(ports))
+	for i, n := range ports {
+		list[i] = strconv.Itoa(n)
+	}
+	if len(ports) > 0 {
+		lb.Printf("The image listens on port %s", strings.Join(list, ", "))
+	}
+	domains, _ := m.store.Domains(ctx, app.ID)
+	for _, d := range domains {
+		switch {
+		case d.Port == 0 && p == 0:
+			lb.Printf("Note: the image doesn't say which port it listens on, so %s goes to port 80. If the site doesn't load, set the app port on the domain.", d.Host)
+		case d.Port > 0 && len(ports) > 0 && !slices.Contains(ports, d.Port):
+			lb.Printf("Warning: %s sends visitors to port %d, but the image listens on %s. If the site doesn't load, change the domain's port on the app's Overview.", d.Host, d.Port, strings.Join(list, ", "))
 		}
 	}
 }
@@ -340,7 +408,9 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 		lb.Printf("Building with %s", dockerfile)
 	case "static":
 		if app.BuildType == "auto" || app.BuildType == "" {
-			lb.Printf("No %s found: building a static site", dockerfile)
+			if err := m.autoDetect(app, ctxDir, dockerfile, lb); err != nil {
+				return "", err
+			}
 		}
 		name, _, err := WriteStaticDockerfile(ctxDir, StaticOptions{
 			BuildImage: app.BuildImage, Command: app.BuildCommand, OutputDir: app.OutputDir, SPA: app.SPA,
@@ -387,6 +457,31 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 		return "", fmt.Errorf("build: %w", err)
 	}
 	return tag, nil
+}
+
+// autoDetect handles a repository with no Dockerfile in automatic build
+// mode: site generators get their build settings filled in (and saved, so
+// they show in the app's settings), and server apps stop with an
+// explanation instead of having their source files served as a website.
+func (m *Manager) autoDetect(app *store.App, ctxDir, dockerfile string, lb *logBuf) error {
+	if app.BuildCommand != "" || app.OutputDir != "" {
+		lb.Printf("No %s found: building a static site", dockerfile)
+		return nil
+	}
+	d := DetectProject(ctxDir)
+	switch d.Kind {
+	case "server":
+		return fmt.Errorf("this looks like a %s app, not a static website (%s). Apps that run a server need a Dockerfile: add one to the repository (examples: %s). If it really is a static site, set the build type to Static site in the app's settings", d.Name, d.Reason, DockerfileHelpURL)
+	case "static":
+		app.BuildCommand, app.OutputDir, app.BuildImage, app.SPA = d.BuildCommand, d.OutputDir, d.BuildImage, d.SPA
+		lb.Printf("No %s found. This looks like a %s site: building it with %q and serving %s/ (change this in the app's settings)", dockerfile, d.Name, d.BuildCommand, d.OutputDir)
+		if err := m.store.SetStaticBuild(context.Background(), app.ID, d.BuildCommand, d.OutputDir, d.BuildImage, d.SPA); err != nil {
+			m.log.Warn("saving detected build settings", "app", app.ServiceName(), "err", err)
+		}
+	default:
+		lb.Printf("No %s found: serving the files as a static website", dockerfile)
+	}
+	return nil
 }
 
 func orDefault(s, d string) string {
@@ -727,6 +822,10 @@ func (m *Manager) SyncProxy(ctx context.Context) error {
 		}
 	}
 	panelHost, _ := m.store.Setting(ctx, "panel_domain")
+	if m.cfg.PanelSvc != "" {
+		// Lets the panel check that a domain's DNS points at this server.
+		rs = append(rs, proxy.Route{Key: "check", Path: CheckPath, Service: m.cfg.PanelSvc, Port: m.cfg.PanelPort})
+	}
 	if panelHost != "" && m.cfg.PanelSvc != "" {
 		rs = append(rs, proxy.Route{Key: "panel", Host: panelHost, Service: m.cfg.PanelSvc, Port: m.cfg.PanelPort, HTTPS: true})
 		taken[panelHost] = true
@@ -747,13 +846,17 @@ func (m *Manager) SyncProxy(ctx context.Context) error {
 				port = firstPort[a.ID]
 			}
 			if port == 0 {
-				port = 80
+				port = a.RoutePort(0)
 			}
 			rs = append(rs, proxy.Route{Key: fmt.Sprintf("a%d", a.ID), Host: host, Service: a.ServiceName(), Port: port, HTTPS: true})
 		}
 	}
 	return proxy.Write(m.cfg.ProxyDir, rs)
 }
+
+// CheckPath is served by the panel on every domain over plain HTTP, so a
+// DNS check can tell whether a domain reaches this server.
+const CheckPath = "/.well-known/simplepanel-check/"
 
 // AutoHost is the automatic subdomain of an app under the wildcard domain
 // base ("" when the app has none): <app>-<project>.<base>.
@@ -769,11 +872,11 @@ func (m *Manager) AutoPort(ctx context.Context, a *store.App) int {
 	if a.HTTPPort > 0 {
 		return a.HTTPPort
 	}
-	port, first := 80, int64(0)
+	port, first := a.RoutePort(0), int64(0)
 	if ds, err := m.store.Domains(ctx, a.ID); err == nil {
 		for _, d := range ds { // the oldest domain, as SyncProxy does
 			if first == 0 || d.ID < first {
-				port, first = d.Port, d.ID
+				port, first = a.RoutePort(d.Port), d.ID
 			}
 		}
 	}
