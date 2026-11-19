@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // A read-only results table: sticky header, row numbers, NULL shown as
   // such, click a cell to see its full value. Sorting is either done here
   // (onsort not given) or by the caller (server-side, for the table browser).
@@ -59,7 +60,7 @@
 
   async function copyValue() {
     try {
-      await navigator.clipboard.writeText(selValue === null ? 'NULL' : String(selValue));
+      await copyText(selValue === null ? 'NULL' : String(selValue));
       copied = true;
       setTimeout(() => (copied = false), 1200);
     } catch {

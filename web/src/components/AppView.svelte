@@ -1,10 +1,11 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon, isAdmin, depLabel, depDot } from '../lib/state.svelte.js';
+  import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon, isAdmin, depLabel, depDot, setLeaveGuard } from '../lib/state.svelte.js';
   import { explainFailure, DOCKERFILE_HELP } from '../lib/explain.js';
   import DomainStatus from './DomainStatus.svelte';
-  import { formFromApp, payload } from '../lib/appform.js';
+  import { formFromApp, payload, withDbUrl } from '../lib/appform.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -132,14 +133,18 @@
     });
   }
 
+  // The failure card's log tail starts at its last line, where the error is.
+  function scrollEnd(node) {
+    const toEnd = () => (node.scrollTop = node.scrollHeight);
+    toEnd();
+    return { update: toEnd };
+  }
+
   // Environment tab: insert another database's connection URL.
   async function insertDb(id) {
     if (!id) return;
     try {
-      const d = await api.get(`/apps/${id}`);
-      const v = { mongo: 'MONGODB_URI', redis: 'REDIS_URL' }[d.database?.engine] || 'DATABASE_URL';
-      const line = `${v}=${d.database.url}`;
-      env = env && !env.endsWith('\n') ? `${env}\n${line}` : `${env || ''}${line}`;
+      env = await withDbUrl(env, id);
     } catch (err) {
       error = err.message;
     }
@@ -180,7 +185,9 @@
       detail = d;
       deployments = deps;
       // An app that isn't up yet has no app logs: show its deploy instead.
-      if (first && d.lastDeployment && ['deploy_failed', 'deploying'].includes(d.status?.state)) showDeployment(d.lastDeployment.id);
+      // On a phone the panel would cover the page, which already says what
+      // went wrong, so leave it closed there.
+      if (first && d.lastDeployment && ['deploy_failed', 'deploying'].includes(d.status?.state) && window.innerWidth > 1100) showDeployment(d.lastDeployment.id);
       if (resetForm || !form) {
         form = formFromApp(d.app);
         env = d.app.env;
@@ -253,6 +260,15 @@
   });
   let more = $state(false);
 
+  // Unsaved Environment or Settings edits: ask before leaving the page.
+  let dirty = $derived(
+    !!detail && !!form && (env !== detail.app.env || JSON.stringify(payload(form)) !== JSON.stringify(payload(formFromApp(detail.app)))),
+  );
+  $effect(() => {
+    setLeaveGuard(() => dirty);
+    return () => setLeaveGuard(null);
+  });
+
   function saveEnv(e) {
     e.preventDefault();
     saveApp({ ...formFromApp(detail.app), env }, e.submitter?.value !== 'save');
@@ -303,7 +319,7 @@
 
   async function copy(text, key = '') {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = key;
       setTimeout(() => (copied = ''), 1500);
     } catch {
@@ -337,7 +353,7 @@
     {detail.app.name}
     <StatusBadge status={badge} />
     {#snippet actions()}
-      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><Icon name="refresh" size={16} /> <span class="lbl">{isDb ? 'Redeploy' : 'Deploy'}</span></button>{/if}
+      {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><span class="ico"><Icon name="refresh" size={16} /></span> {isDb ? 'Redeploy' : 'Deploy'}</button>{/if}
       <button
         class="btn icon"
         class:active={ui.panelOpen}
@@ -390,7 +406,7 @@
           <div class="row fix"><a class="btn" href="#/settings/registries">Add a registry login</a></div>
         {/if}
         {#if failed.tail?.length && !['git-auth', 'server-app', 'image'].includes(failure.kind)}
-          <pre class="tail">{failed.tail.join('\n')}</pre>
+          <pre class="tail" use:scrollEnd={failed.tail}>{failed.tail.join('\n')}</pre>
         {/if}
       </section>
     {/if}
@@ -558,7 +574,7 @@
         {#if detail.domains.length === 0 && !detail.autoHost}
           <p class="muted">
             No domains yet, so this app is only reachable by other apps in this project. Add a domain to put it on the internet with HTTPS.
-            {#if !detail.wildcard && isAdmin()}Or set up <a href="#/settings">automatic subdomains</a> once, and every app gets an address.{/if}
+            {#if !detail.wildcard && isAdmin()}Or set up <a href="#/settings">automatic subdomains</a> once, and every app gets an address. No domain of your own? It can use a free sslip.io address.{/if}
           </p>
         {/if}
         <ul class="domains">
@@ -1012,11 +1028,14 @@
   :global(.btn.icon.active) {
     background: var(--sp-bg-active);
   }
+  .ico {
+    display: inline-flex;
+  }
   @media (max-width: 560px) {
     .row.tight {
       flex-wrap: wrap;
     }
-    .lbl {
+    .ico {
       display: none;
     }
     .tabs {

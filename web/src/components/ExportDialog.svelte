@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // Shows an export as JSON with copy and download.
   import { api } from '../lib/api.js';
   import Modal from './Modal.svelte';
@@ -20,7 +21,7 @@
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch {

@@ -2,13 +2,28 @@
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
   import { ui, data, go, loadApps, showDeployment, isAdmin } from '../lib/state.svelte.js';
-  import { emptyForm, payload } from '../lib/appform.js';
+  import { emptyForm, payload, withDbUrl } from '../lib/appform.js';
   import AppFields from './AppFields.svelte';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
 
   // A half-filled form survives a trip to another page (for example to
   // connect GitHub), for this browser tab only.
+  // Databases already in this project, to insert their URLs.
+  let projectDbs = $derived(data.appsFor === ui.route.projectId ? data.apps.filter((x) => x.kind && x.kind !== 'app') : []);
+  let envErr = $state('');
+  async function insertDb(e) {
+    const id = Number(e.currentTarget.value);
+    e.currentTarget.value = '';
+    if (!id) return;
+    envErr = '';
+    try {
+      form.env = await withDbUrl(form.env, id);
+    } catch (err) {
+      envErr = err.message;
+    }
+  }
+
   const draftKey = `sp-newapp-${ui.route.projectId}`;
   function loadDraft() {
     try {
@@ -215,8 +230,15 @@
     {#if envOpen}
       <textarea bind:value={form.env} rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;SECRET_KEY=…"></textarea>
       <small class="faint">One <code>KEY=value</code> per line, or paste a <code>.env</code> file. You can change them later in the Environment tab.</small>
+      {#if projectDbs.length}
+        <select class="insert" aria-label="Insert a database's connection URL" onchange={insertDb}>
+          <option value="">Insert a database URL…</option>
+          {#each projectDbs as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+        </select>
+      {/if}
+      {#if envErr}<p class="error">{envErr}</p>{/if}
     {:else}
-      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button> <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
+      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length} <button type="button" class="btn small" onclick={() => (envOpen = true)}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
     {/if}
   </div>
 
@@ -242,7 +264,7 @@
       {:else}
         <small class="hint">
           Without a domain, the app is only reachable by other apps in this project.
-          {#if isAdmin()}<a href="#/settings">Set up automatic subdomains</a> to give every app an address.{/if}
+          {#if isAdmin()}<a href="#/settings">Set up automatic subdomains</a> to give every app an address, even without a domain of your own.{/if}
         </small>
       {/if}
     {/if}
@@ -328,5 +350,9 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--sp-space-2);
+  }
+  .insert {
+    width: auto;
+    max-width: 260px;
   }
 </style>

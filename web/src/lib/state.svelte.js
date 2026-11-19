@@ -112,9 +112,31 @@ function parseHash() {
   return r;
 }
 
+// A page with unsaved edits sets a guard; it returns true while there is
+// something to lose. Leaving that page then asks first.
+let leaveGuard = null;
+export function setLeaveGuard(fn) {
+  leaveGuard = fn;
+}
+
 export function startRouter() {
+  let lastHash = location.hash;
+  window.addEventListener('beforeunload', (e) => {
+    if (leaveGuard?.()) e.preventDefault();
+  });
   window.addEventListener('hashchange', () => {
+    const prev = ui.route;
+    const next = parseHash();
+    const samePage = next.view === prev.view && next.appId === prev.appId;
+    if (!samePage && leaveGuard?.() && !confirm('You have unsaved changes. Leave without saving them?')) {
+      history.replaceState(null, '', lastHash);
+      return;
+    }
+    lastHash = location.hash;
     ui.route = parseHash();
+    // On a phone the panel covers the page; picking another app or database
+    // from the menu should show that page, not the old panel.
+    if (ui.navOpen && window.innerWidth <= 1100 && ui.route.appId !== prev.appId) ui.panelOpen = false;
     ui.navOpen = false;
   });
 }

@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../../lib/clipboard.js';
   // Settings section: REST API tokens for scripts, CI and the `sp` CLI.
   // Tokens made here carry API access; AI (MCP) tokens do not, so an AI
   // can never use the REST API to read secrets.
@@ -89,7 +90,7 @@ curl -X POST -H "Authorization: Bearer ${secret}" \\
 
   async function copy(text, key) {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = key;
       setTimeout(() => (copied = ''), 1500);
     } catch {

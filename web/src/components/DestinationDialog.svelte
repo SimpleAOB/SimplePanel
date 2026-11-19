@@ -10,8 +10,9 @@
   // Endpoint presets for common providers.
   const providers = [
     ['s3', 'AWS S3', 'https://s3.amazonaws.com', 'us-east-1'],
-    ['r2', 'Cloudflare R2', 'https://<account-id>.r2.cloudflarestorage.com', 'auto'],
-    ['b2', 'Backblaze B2', 'https://s3.<region>.backblazeb2.com', ''],
+    // R2 and B2 build the endpoint from the account ID or region.
+    ['r2', 'Cloudflare R2', '', 'auto'],
+    ['b2', 'Backblaze B2', '', ''],
     ['other', 'Other (MinIO, Wasabi…)', '', 'us-east-1'],
   ];
   const keyHelp = {
@@ -24,7 +25,7 @@
   function initial() {
     return dest
       ? { ...dest, provider: 'other', secretKey: '', passphrase: '', encrypt: dest.encrypted, wasEncrypted: dest.encrypted }
-      : { provider: 's3', name: '', endpoint: providers[0][2], region: providers[0][3], bucket: '', prefix: 'simplepanel', accessKey: '', secretKey: '', pathStyle: false, passphrase: '', encrypt: true };
+      : { provider: 's3', name: '', endpoint: providers[0][2], region: providers[0][3], bucket: '', account: '', prefix: 'simplepanel', accessKey: '', secretKey: '', pathStyle: false, passphrase: '', encrypt: true };
   }
   let editing = $state(initial());
   let formErr = $state('');
@@ -39,8 +40,16 @@
     editing.pathStyle = key === 'other';
   }
 
+  // The endpoint these providers need, from the account ID or region.
+  function endpointFor(e) {
+    if (e.provider === 'r2') return e.account.trim() ? `https://${e.account.trim()}.r2.cloudflarestorage.com` : '';
+    if (e.provider === 'b2') return e.region.trim() ? `https://s3.${e.region.trim()}.backblazeb2.com` : '';
+    return e.endpoint;
+  }
+
   function body() {
-    const b = { ...editing };
+    const b = { ...editing, endpoint: endpointFor(editing) };
+    delete b.account;
     b.clearPassphrase = !editing.encrypt && editing.wasEncrypted;
     if (!editing.encrypt) b.passphrase = '';
     return b;
@@ -110,16 +119,30 @@
           <input type="text" bind:value={editing.bucket} placeholder="my-backups" required />
         </label>
       </div>
-      <div class="row">
-        <label class="field grow2">
-          <span>Endpoint</span>
-          <input type="text" bind:value={editing.endpoint} placeholder="https://s3.example.com" required />
+      {#if !editing.id && editing.provider === 'r2'}
+        <label class="field">
+          <span>Account ID</span>
+          <input type="text" bind:value={editing.account} placeholder="0123456789abcdef0123456789abcdef" autocomplete="off" required />
+          <small>In the Cloudflare dashboard under R2 › Overview, labelled Account ID.</small>
         </label>
+      {:else if !editing.id && editing.provider === 'b2'}
         <label class="field">
           <span>Region</span>
-          <input type="text" bind:value={editing.region} placeholder="us-east-1" />
+          <input type="text" bind:value={editing.region} placeholder="us-west-004" required />
+          <small>On the bucket's page in Backblaze, the Endpoint reads s3.<em>region</em>.backblazeb2.com.</small>
         </label>
-      </div>
+      {:else}
+        <div class="row">
+          <label class="field grow2">
+            <span>Endpoint</span>
+            <input type="text" bind:value={editing.endpoint} placeholder="https://s3.example.com" required />
+          </label>
+          <label class="field">
+            <span>Region</span>
+            <input type="text" bind:value={editing.region} placeholder="us-east-1" />
+          </label>
+        </div>
+      {/if}
       <div class="row">
         <label class="field">
           <span>Access key</span>

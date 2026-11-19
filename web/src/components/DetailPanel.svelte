@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // Right-hand panel: app logs (all running containers, or one launch,
   // past or present) and deployment build logs. Resizable, searchable and
   // downloadable; extra filters show in advanced view.
@@ -97,7 +98,15 @@
     if (!panel.deploymentId) return;
     try {
       const d = await api.get(`/deployments/${panel.deploymentId}`);
-      dep = d.appId === aid ? d : null;
+      if (d.appId !== aid) {
+        // Left over from another app: show this app's newest deployment.
+        panel.deploymentId = 0;
+        dep = null;
+        await loadDeps();
+        if (panel.deploymentId) loadDep();
+        return;
+      }
+      dep = d;
       error = '';
       // Keep the picker's label in step with the deployment it shows.
       if (dep) {
@@ -198,7 +207,7 @@
 
   async function copyShown() {
     try {
-      await navigator.clipboard.writeText(shown.map((l) => l.raw).join('\n'));
+      await copyText(shown.map((l) => l.raw).join('\n'));
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch {

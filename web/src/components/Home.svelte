@@ -11,9 +11,8 @@
 
   let sys = $state(null);
   let appCount = $state(null);
-  let firstApp = $state(null);
-  let hasDb = $state(false);
   let hasBackups = $state(null);
+  let unscheduled = $state([]); // databases with no backup schedule
   let dismissed = $state(load());
   function load() {
     try {
@@ -38,13 +37,13 @@
       /* shown as unknown */
     }
     if (!isAdmin()) return;
+    const dbs = [];
     try {
       let n = 0;
       for (const p of data.projects.slice(0, 20)) {
         const apps = await api.get(`/projects/${p.id}/apps`);
-        n += apps.length;
-        if (!firstApp && apps.length) firstApp = { pid: p.id, id: apps[0].id };
-        if (apps.some((a) => a.kind && a.kind !== 'app')) hasDb = true;
+        n += apps.filter((a) => !a.kind || a.kind === 'app').length;
+        for (const a of apps) if (a.kind && a.kind !== 'app') dbs.push({ pid: p.id, id: a.id, name: a.name });
       }
       appCount = n;
     } catch {
@@ -55,11 +54,29 @@
     } catch {
       hasBackups = null;
     }
+    // A destination alone backs nothing up: each database needs a schedule.
+    if (hasBackups) {
+      const missing = [];
+      for (const d of dbs.slice(0, 30)) {
+        try {
+          const o = await api.get(`/apps/${d.id}/backups`);
+          if (!o.jobs?.some((j) => j.enabled)) missing.push(d);
+        } catch {
+          /* skip */
+        }
+      }
+      unscheduled = missing;
+    }
   });
 
   // Inline "create a project" for the first step.
   let projName = $state('');
   let newOpen = $state(false);
+  // The form can open below the fold: bring it into view and focus it.
+  function focusIn(node) {
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    node.focus({ preventScroll: true });
+  }
   let projErr = $state('');
   let projSlug = $derived(projName.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
   async function createProject(e) {
@@ -78,7 +95,7 @@
     { key: 'project', done: data.projects.length > 0, title: 'Create a project', text: 'A project groups the apps and databases that belong together, like a website and its database.' },
     { key: 'app', done: (appCount ?? 0) > 0, title: 'Deploy your first app', text: 'From a Git repository or a Docker image. You can add a database in the same project.' },
     { key: 'domain', done: !!sys?.panelDomain, title: 'Open this panel on your own domain', text: 'So you sign in over HTTPS instead of http://…:3000.' },
-    { key: 'backups', done: !!hasBackups, title: 'Set up backups', text: 'Keep copies of your databases on S3-compatible storage such as Cloudflare R2 or Backblaze B2.' },
+    { key: 'backups', done: !!hasBackups && unscheduled.length === 0, title: 'Set up backups', text: 'Keep copies of your databases on S3-compatible storage such as Cloudflare R2 or Backblaze B2.' },
   ]);
   let showSteps = $derived(isAdmin() && !dismissed && appCount !== null && steps.some((x) => !x.done));
   let next = $derived(steps.find((x) => !x.done)?.key);
@@ -88,7 +105,7 @@
   Overview
   {#snippet actions()}
     {#if isAdmin()}
-      <button class="btn" onclick={() => (importing = true)}>Import project</button>
+      <button class="btn" onclick={() => (importing = true)}>Import<span class="wide"> project</span></button>
       <button class="btn primary" onclick={() => { newOpen = true; }}>New project</button>
     {/if}
   {/snippet}
@@ -127,6 +144,11 @@
                   <div><button class="btn primary" onclick={() => go(`/p/${data.projects[0].id}/new`)}>New app</button></div>
                 {:else if st.key === 'domain'}
                   <div><a class="btn primary" href="#/settings">Set a panel domain</a></div>
+                {:else if st.key === 'backups' && hasBackups}
+                  <span>
+                    Destination added. {unscheduled.length === 1 ? 'This database has' : 'These databases have'} no backup schedule yet:
+                    {#each unscheduled as d, j (d.id)}{j ? ', ' : ''}<a href="#/p/{d.pid}/a/{d.id}/backups">{d.name}</a>{/each}.
+                  </span>
                 {:else if st.key === 'backups'}
                   <div><a class="btn primary" href="#/settings/backups">Add a backup destination</a></div>
                 {/if}
@@ -146,8 +168,7 @@
     <h2>Projects</h2>
     {#if newOpen}
       <form class="card row newproj" onsubmit={createProject}>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input type="text" bind:value={projName} placeholder="my-website" aria-label="Project name" autofocus required />
+        <input type="text" bind:value={projName} placeholder="my-website" aria-label="Project name" use:focusIn required />
         <button class="btn primary">Create project</button>
         <button type="button" class="btn ghost" onclick={() => (newOpen = false)}>Cancel</button>
         {#if projSlug && projSlug !== projName}<small class="faint">Will be created as <strong>{projSlug}</strong>.</small>{/if}
@@ -325,5 +346,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-space-2);
+  }
+  @media (max-width: 560px) {
+    .wide {
+      display: none;
+    }
   }
 </style>

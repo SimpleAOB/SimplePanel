@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // Settings section: API tokens for the built-in MCP server, setup
   // instructions for AI clients, and the log of what AI tokens did.
   import { onMount } from 'svelte';
@@ -69,7 +70,7 @@
 
   async function copy(text, key) {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = key;
       setTimeout(() => (copied = ''), 1500);
     } catch {

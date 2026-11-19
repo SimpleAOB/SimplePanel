@@ -23,6 +23,17 @@
     ip = s.serverIp || location.hostname;
   });
 
+  // A public IPv4 address can use sslip.io, a free DNS service where
+  // anything.1-2-3-4.sslip.io points at 1.2.3.4, so apps get a working
+  // HTTPS address before the person owns a domain.
+  let sslip = $derived.by(() => {
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
+    if (!m) return '';
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b < 32) || (a === 100 && b >= 64 && b < 128)) return '';
+    return `${m.slice(1).join('-')}.sslip.io`;
+  });
+
   async function saveDomain(e) {
     e.preventDefault();
     msg = err = '';
@@ -87,6 +98,12 @@
     Add a DNS record <code>*.{wildcard || 'apps.example.com'}</code> of type A pointing at this server{ip ? ` (${ip})` : ''}.
     Certificates are issued for each subdomain the first time it's used. Leave empty to turn this off.
   </small>
+  {#if sslip && !savedWildcard}
+    <p class="muted">
+      No domain yet? <button type="button" class="linkish" onclick={() => (wildcard = sslip)}>Use {sslip}</button>, a free service that
+      points every name under it at this server, so you can open your apps right away. Click Save after. You can switch to your own domain later.
+    </p>
+  {/if}
   {#if savedWildcard}{#key savedWildcard}<DomainStatus host={'check.' + savedWildcard} https={false} serverIp={ip} />{/key}{/if}
   {#if wmsg}<p class="ok">{wmsg}</p>{/if}
   {#if werr}<p class="error">{werr}</p>{/if}

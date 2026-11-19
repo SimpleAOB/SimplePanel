@@ -682,11 +682,20 @@ func (m *Manager) applyService(ctx context.Context, app *store.App, image string
 	return m.waitHealthy(ctx, spec.Name, image, lb)
 }
 
+// stableFor is how long a new service's container must stay up before a
+// deploy counts as successful.
+var stableFor = 10 * time.Second
+
 // waitHealthy waits until the update completes or a task with the new image
 // is running, and reports rollbacks as failures.
 func (m *Manager) waitHealthy(ctx context.Context, name, image string, lb *logBuf) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	lastMsg := ""
+	// A crash-looping container is briefly "running" between restarts, so
+	// a fresh service only counts as started once a task has stayed up for
+	// stableFor with no new failures.
+	var runningSince time.Time
+	lastFailed := 0
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -715,14 +724,14 @@ func (m *Manager) waitHealthy(ctx context.Context, name, image string, lb *logBu
 		if err != nil {
 			return err
 		}
-		failed := 0
+		failed, running := 0, false
 		for _, t := range tasks {
 			if t.Spec.ContainerSpec.Image != image {
 				continue
 			}
 			switch t.Status.State {
 			case "running":
-				return nil
+				running = true
 			case "failed", "rejected":
 				failed++
 				if msg := t.Status.Err; msg != "" && msg != lastMsg {
@@ -734,6 +743,16 @@ func (m *Manager) waitHealthy(ctx context.Context, name, image string, lb *logBu
 		if failed >= 3 {
 			return errors.New("the container keeps failing to start; check the app logs")
 		}
+		switch {
+		case failed > lastFailed || !running:
+			runningSince = time.Time{}
+		case runningSince.IsZero():
+			runningSince = time.Now()
+			lb.Printf("Container started; checking that it stays up")
+		case time.Since(runningSince) >= stableFor:
+			return nil
+		}
+		lastFailed = failed
 	}
 	return errors.New("timed out waiting for the app to start")
 }

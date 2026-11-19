@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // Overview card for apps built from Git: where the code comes from,
   // deploy on push, pull request previews, the webhook URL and deploy key.
   import { onMount } from 'svelte';
@@ -88,7 +89,7 @@
 
   async function copy(text, key) {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = key;
       setTimeout(() => (copied = ''), 1500);
     } catch {

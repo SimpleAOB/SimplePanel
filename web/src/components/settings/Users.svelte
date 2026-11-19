@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../../lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api } from '../../lib/api.js';
   import { data, timeAgo, roleLabels } from '../../lib/state.svelte.js';
@@ -84,7 +85,7 @@
 
   async function copy(text) {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch {
