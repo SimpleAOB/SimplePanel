@@ -31,6 +31,8 @@ export const data = $state({
   projects: [],
   apps: [],
   appsFor: 0,
+  // Whether Docker is answering the panel (see GET /api/docker).
+  docker: { ok: true },
 });
 
 export function applyTheme() {
@@ -139,6 +141,15 @@ export async function loadApps(projectId) {
   if (ui.route.projectId === projectId) {
     data.apps = apps;
     data.appsFor = projectId;
+  }
+}
+
+// Docker's health as the server sees it. Reading it never waits on Docker.
+export async function loadDocker() {
+  try {
+    data.docker = await api.get('/docker');
+  } catch {
+    /* the panel itself is unreachable; other requests say so */
   }
 }
 

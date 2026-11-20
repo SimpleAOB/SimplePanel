@@ -2,9 +2,10 @@
 // Every mutating request carries the X-SimplePanel header (CSRF protection).
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data = null) {
     super(message);
     this.status = status;
+    this.data = data; // the whole error body, e.g. { code: 'memory_pressure' }
   }
 }
 
@@ -29,7 +30,7 @@ async function request(method, path, body) {
   }
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/login') && !path.startsWith('/setup')) onUnauthorized();
-    throw new ApiError(res.status, data?.error || res.statusText);
+    throw new ApiError(res.status, data?.error || res.statusText, data);
   }
   return data;
 }

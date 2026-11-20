@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '../../lib/api.js';
   import { ui } from '../../lib/state.svelte.js';
+  import ServerMemory from './ServerMemory.svelte';
 
   let s = $state(null);
   let defaults = $state(null);
@@ -46,6 +47,8 @@
     See it on the Overview page and on each service's Metrics tab. It runs inside SimplePanel, so there's nothing extra to install.
   </p>
 </section>
+
+<ServerMemory />
 
 {#if err}<p class="error">{err}</p>{/if}
 {#if s}

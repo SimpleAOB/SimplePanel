@@ -2,7 +2,8 @@
   import { api } from '../lib/api.js';
   import Logo from './Logo.svelte';
 
-  let { mode, ondone } = $props();
+  let { mode, ondone, needsCode = false } = $props();
+  let code = $state('');
   // svelte-ignore state_referenced_locally
   let username = $state(mode === 'setup' ? 'admin' : '');
   let password = $state('');
@@ -19,7 +20,7 @@
     }
     busy = true;
     try {
-      const u = await api.post(mode === 'setup' ? '/setup' : '/login', { username, password });
+      const u = await api.post(mode === 'setup' ? '/setup' : '/login', mode === 'setup' ? { username, password, code: code.trim() } : { username, password });
       ondone(u);
     } catch (err) {
       error = err.message;
@@ -34,6 +35,13 @@
     <div class="brand"><Logo size={40} /><h1>SimplePanel</h1></div>
     {#if mode === 'setup'}
       <p class="muted">Welcome! Create the admin account to claim this server.</p>
+      {#if needsCode}
+        <label class="field">
+          <span>Setup code</span>
+          <input type="text" bind:value={code} autocomplete="one-time-code" spellcheck="false" class="mono" required />
+          <small>The installer printed it when it finished. Lost it? Run <code>docker service inspect simplepanel --format '&#123;&#123;json .Spec.TaskTemplate.ContainerSpec.Env&#125;&#125;'</code> on the server.</small>
+        </label>
+      {/if}
     {:else}
       <p class="muted">Sign in to continue.</p>
     {/if}

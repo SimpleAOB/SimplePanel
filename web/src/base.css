@@ -169,6 +169,13 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.notice {
+  padding: var(--sp-space-2) var(--sp-space-3);
+  border-radius: var(--sp-radius-md);
+  border: 1px solid color-mix(in srgb, var(--sp-warning) 45%, var(--sp-border));
+  background: color-mix(in srgb, var(--sp-warning) 12%, transparent);
+  font-size: var(--sp-text-sm);
+}
 .muted { color: var(--sp-text-muted); }
 .faint { color: var(--sp-text-faint); }
 
