@@ -54,3 +54,26 @@ func TestResolveBuildType(t *testing.T) {
 		t.Errorf("explicit static: got %s", got)
 	}
 }
+
+func TestInsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "web", "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("web", filepath.Join(repo, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insideRepo(repo, filepath.Join(repo, "web", "src")); err != nil {
+		t.Errorf("plain folder refused: %v", err)
+	}
+	if _, err := insideRepo(repo, filepath.Join(repo, "alias")); err != nil {
+		t.Errorf("symlink inside the repo refused: %v", err)
+	}
+	if _, err := insideRepo(repo, filepath.Join(repo, "escape")); err == nil {
+		t.Error("symlink to outside the repo accepted")
+	}
+}

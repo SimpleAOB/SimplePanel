@@ -15,8 +15,8 @@ On a fresh Ubuntu or Debian server, as root:
 curl -fsSL https://raw.githubusercontent.com/SimpleAOB/SimplePanel/main/install.sh | sudo sh
 ```
 
-Then open `http://<your-server-ip>:3000` and create the admin account. Do it
-straight away: the first visitor claims the server.
+Then open `http://<your-server-ip>:3000` and create the admin account with
+the setup code the installer prints, so nobody else can claim the server.
 
 The installer sets up Docker, Docker Swarm, Traefik and SimplePanel. It
 downloads everything before changing the server, and it is safe to run
@@ -34,6 +34,9 @@ back. Turn on Advanced view for automatic updates at an hour you choose.
 | `TRAEFIK_IMAGE` | `traefik:v3.6`                           | Traefik image                             |
 | `ACME_EMAIL`    | _(none)_                                 | Email for Let's Encrypt expiry notices    |
 | `SP_PORT`       | `3000`                                   | Port the panel listens on                 |
+| `SP_PROTECT_HOST` | `auto` (new servers)                   | `1`: cap all containers' memory on a server already running containers (restarts Docker once); `0`: never |
+| `SP_NO_SWAP`    | _(unset)_                                | `1`: don't add a 2 GB swap file           |
+| `SP_NO_TUNING`  | _(unset)_                                | `1`: don't change kernel memory settings  |
 
 Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 
@@ -122,6 +125,34 @@ read-only. Re-run the install command to add it to an existing install.
 - **API and CLI**: a REST API with Bearer tokens and the `sp` command-line
   tool for scripts and CI (`sp deploy shop/web --wait`). See
   [docs/API.md](docs/API.md).
+
+## Keeping the server responsive
+
+Running out of memory is what usually takes a small server down: Docker and
+Swarm stop answering and even SSH hangs. SimplePanel guards against it:
+
+- **Memory limits sized to your server.** Every service gets an automatic
+  limit (on a 1 GB server: 128 MB for apps, 256 to 480 MB for databases),
+  shown with what the other services use. Pick another size in the
+  service's settings. If a service goes over, only that service restarts.
+- **Memory kept for the system.** 15% of RAM (at least 384 MB) is left for
+  Linux, SSH and Docker, plus about 96 MB for SimplePanel and Traefik. The
+  installer caps all containers together below that (a systemd slice, which
+  may also use at most half that much swap), adds a 2 GB swap file when there
+  is none and tunes the kernel to keep memory free. Image builds are capped
+  too.
+- **Deploys wait when memory is nearly full** (90%), unless an owner or
+  admin confirms.
+- **If Docker stops answering** (or Swarm is stuck while Docker still
+  answers pings), the panel says so instead of showing empty projects, never
+  piles up requests, reconnects by itself and can notify you. Clean-up steps,
+  such as starting an app again after a restore, are still sent and retried.
+- **The panel's own data stays small**: only the last 50 deployments (and
+  their build logs) of each app are kept.
+
+On a server installed before this, re-run the installer with
+`SP_PROTECT_HOST=1` to turn on the server-wide cap (it restarts Docker once).
+Settings › Monitoring shows the memory picture.
 
 ## Deploy webhooks
 

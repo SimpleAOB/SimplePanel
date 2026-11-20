@@ -8,10 +8,11 @@
   import Icon from './Icon.svelte';
   import StaticSiteHelp from './StaticSiteHelp.svelte';
   import RepoPicker from './RepoPicker.svelte';
+  import MemoryPicker from './MemoryPicker.svelte';
 
   // more: show this form's advanced fields without turning on Advanced
   // view everywhere.
-  let { value = $bindable(), hasToken = false, showRuntime = true, database = false, more = $bindable(false) } = $props();
+  let { value = $bindable(), hasToken = false, showRuntime = true, database = false, kind = 'app', appId = 0, more = $bindable(false) } = $props();
   let adv = $derived(ui.advanced || more);
 
   let helpOpen = $state(false);
@@ -176,6 +177,10 @@
     {/if}
   {/if}
 
+  {#if showRuntime && !adv}
+    <h3 class="sub">Resources</h3>
+    <MemoryPicker bind:value={value.memoryMb} {kind} {appId} replicas={database ? 1 : value.replicas} />
+  {/if}
   {#if showRuntime && adv}
     <h3 class="sub">Runtime</h3>
     <div class="row">
@@ -188,12 +193,10 @@
       <label class="field">
         <span>CPU limit (cores)</span>
         <input type="number" min="0" step="0.1" bind:value={value.cpuLimit} placeholder="0 = no limit" />
-      </label>
-      <label class="field">
-        <span>Memory limit (MB)</span>
-        <input type="number" min="0" step="64" bind:value={value.memoryMb} placeholder="0 = no limit" />
+        <small>Cores this service may use, e.g. 0.5.</small>
       </label>
     </div>
+    <MemoryPicker bind:value={value.memoryMb} {kind} {appId} replicas={database ? 1 : value.replicas} />
     <label class="field">
       <span>Command override</span>
       <input type="text" bind:value={value.command} placeholder="leave blank to use the image's default" />

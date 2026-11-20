@@ -6,6 +6,7 @@
   import Shell from './components/Shell.svelte';
   import Invite from './components/Invite.svelte';
 
+  let needsCode = $state(false);
   let phase = $state('loading'); // loading | setup | login | ready | error
   let loadError = $state('');
 
@@ -13,6 +14,7 @@
     try {
       const s = await api.get('/setup');
       if (s.needsSetup) {
+        needsCode = !!s.needsCode;
         phase = 'setup';
         return;
       }
@@ -46,7 +48,7 @@
 {:else if phase === 'error'}
   <div class="center"><p class="error">Can't reach SimplePanel: {loadError}</p></div>
 {:else if phase === 'setup' || phase === 'login'}
-  <Auth mode={phase} ondone={(u) => { data.user = u; phase = 'ready'; }} />
+  <Auth mode={phase} {needsCode} ondone={(u) => { data.user = u; phase = 'ready'; }} />
 {:else}
   <Shell />
 {/if}

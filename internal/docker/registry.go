@@ -115,5 +115,7 @@ func NormalizeRegistry(s string) (string, error) {
 // Login checks a registry login through the Docker daemon, the same way
 // `docker login` does. Nothing is stored on the server.
 func (c *Client) Login(ctx context.Context, auth RegistryAuth) error {
-	return c.doJSON(ctx, http.MethodPost, "/auth", nil, auth.config(), nil)
+	// The daemon contacts the registry, which can be slow; that isn't
+	// Docker hanging. Callers bound it with their own deadline.
+	return c.doJSON(Long(ctx), http.MethodPost, "/auth", nil, auth.config(), nil)
 }

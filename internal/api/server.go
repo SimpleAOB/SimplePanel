@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -51,9 +52,10 @@ type Server struct {
 	manifests manifestStates
 
 	updater *update.Updater
+	https   httpsOnlyCache
 
 	loginLimit   *limiter
-	loginGlobal  *limiter // failed sign-ins from all addresses
+	loginFails   *limiter // failed sign-ins per IP
 	hookLimit    *limiter
 	mcpAuthLimit *limiter // failed MCP token attempts per IP
 }
@@ -62,7 +64,7 @@ func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *
 	return &Server{
 		store: st, docker: dc, deploy: dm, ui: ui, log: log, version: version,
 		loginLimit:   newLimiter(10, 5*time.Minute),
-		loginGlobal:  newLimiter(50, 5*time.Minute),
+		loginFails:   newLimiter(10, 5*time.Minute),
 		hookLimit:    newLimiter(30, time.Minute),
 		mcpAuthLimit: newLimiter(20, 10*time.Minute),
 		git:          gitprovider.New(),
@@ -108,6 +110,9 @@ func (s *Server) Handler() http.Handler {
 	a("GET /api/me", s.me)
 	a("POST /api/me/password", s.changePassword)
 	a("GET /api/system", s.system)
+	a("GET /api/capacity", s.getCapacity)
+	a("PUT /api/capacity/settings", s.putCapacitySettings)
+	a("GET /api/docker", func(w http.ResponseWriter, r *http.Request, _ *store.User) { writeJSON(w, 200, s.docker.Health()) })
 	a("PUT /api/settings", s.putSettings)
 	a("GET /api/tokens", s.listTokens)
 	a("POST /api/tokens", s.createToken)
@@ -246,6 +251,9 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if s.enforceHTTPS(w, r) {
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 			limit := int64(maxBody)
@@ -342,7 +350,7 @@ func clientIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	ip := net.ParseIP(host)
-	if ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
+	if ip != nil && trustedProxy(ip) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
 			if last := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(last) != nil {
@@ -351,6 +359,62 @@ func clientIP(r *http.Request) string {
 		}
 	}
 	return host
+}
+
+// proxies caches the addresses of Traefik's containers. Only they (and
+// this server itself) may say who the visitor is with X-Forwarded-For;
+// any other container on the private network could otherwise pretend to
+// be a new visitor on every request and dodge the sign-in limits.
+var proxies struct {
+	sync.Mutex
+	ips      map[string]bool
+	at       time.Time
+	resolved bool // a lookup has worked at least once
+	busy     bool
+}
+
+func trustedProxy(ip net.IP) bool {
+	if ip.IsLoopback() {
+		return true
+	}
+	if !ip.IsPrivate() {
+		return false
+	}
+	proxies.Lock()
+	defer proxies.Unlock()
+	age := time.Since(proxies.at)
+	// Look again every 30s, or sooner for an unknown address (Traefik
+	// restarted with a new one).
+	if (age > 30*time.Second || (!proxies.ips[ip.String()] && age > 5*time.Second)) && !proxies.busy {
+		proxies.busy = true
+		go refreshProxies()
+	}
+	if !proxies.resolved {
+		// Not in Swarm (development) or not looked up yet: trust the
+		// private network as before, rather than counting every visitor
+		// as Traefik.
+		return true
+	}
+	return proxies.ips[ip.String()]
+}
+
+func refreshProxies() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, "tasks."+orEmpty(os.Getenv("SP_PROXY_SERVICE"), "simplepanel-traefik"))
+	proxies.Lock()
+	defer proxies.Unlock()
+	proxies.busy, proxies.at = false, time.Now()
+	if err != nil || len(addrs) == 0 {
+		return // keep what we had
+	}
+	proxies.ips = map[string]bool{}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil {
+			proxies.ips[ip.String()] = true
+		}
+	}
+	proxies.resolved = true
 }
 
 func isHTTPS(r *http.Request) bool {
@@ -402,7 +466,8 @@ func (l *limiter) Allow(key string) bool {
 	return w.n <= l.max
 }
 
-// StartJanitor prunes expired sessions and invite links periodically.
+// StartJanitor prunes expired sessions, invite links and old deployments
+// periodically.
 func (s *Server) StartJanitor(ctx context.Context) {
 	go func() {
 		t := time.NewTicker(time.Hour)
@@ -410,6 +475,7 @@ func (s *Server) StartJanitor(ctx context.Context) {
 		for {
 			_ = s.store.PruneSessions(ctx)
 			_ = s.store.PruneInvites(ctx)
+			_ = s.store.PruneDeployments(ctx)
 			select {
 			case <-ctx.Done():
 				return

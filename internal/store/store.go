@@ -465,6 +465,21 @@ func (s *Store) PruneSessions(ctx context.Context) error {
 	return err
 }
 
+// KeepDeployments is how many finished deployments (with their build
+// logs) are kept per app. Builds with auto-deploy can run many times a day,
+// and each log can be large; without pruning the panel's database grows
+// until the disk fills.
+const KeepDeployments = 50
+
+// PruneDeployments deletes all but the newest KeepDeployments finished
+// deployments of each app.
+func (s *Store) PruneDeployments(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM deployments WHERE finished_at IS NOT NULL AND id IN (
+		SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY app_id ORDER BY id DESC) AS n FROM deployments) WHERE n > ?)`,
+		KeepDeployments)
+	return err
+}
+
 // ---- Settings ----
 
 func (s *Store) Setting(ctx context.Context, key string) (string, error) {

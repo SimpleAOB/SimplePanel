@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -31,10 +32,13 @@ func (s *Server) system(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	} else {
 		out["dockerError"] = err.Error()
 	}
+	out["dockerHealth"] = s.docker.Health()
 	pd, _ := s.store.Setting(r.Context(), "panel_domain")
 	out["panelDomain"] = pd
 	ip, _ := s.store.Setting(r.Context(), "server_ip")
 	out["serverIp"] = ip
+	out["httpsOnly"] = s.httpsOnly(r.Context())
+	out["viaHttps"] = viaProxyHTTPS(r)
 	writeJSON(w, 200, out)
 }
 
@@ -45,11 +49,24 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, u *store.Us
 	var body struct {
 		PanelDomain    *string `json:"panelDomain"`
 		WildcardDomain *string `json:"wildcardDomain"`
+		HTTPSOnly      *bool   `json:"httpsOnly"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	out := map[string]string{}
+	out := map[string]any{}
+	if body.HTTPSOnly != nil && *body.HTTPSOnly {
+		// Only from the HTTPS address itself: that proves it works, so
+		// turning plain HTTP off can't lock anyone out.
+		pd, _ := s.store.Setting(r.Context(), "panel_domain")
+		if body.PanelDomain != nil {
+			pd = strings.TrimSpace(strings.ToLower(*body.PanelDomain))
+		}
+		if pd == "" || !viaProxyHTTPS(r) || !strings.EqualFold(hostOnly(r.Host), pd) {
+			writeErr(w, 400, "open SimplePanel at its HTTPS address (https://"+orEmpty(pd, "your panel domain")+") and turn this on from there")
+			return
+		}
+	}
 	if body.PanelDomain != nil {
 		pd := strings.TrimSpace(strings.ToLower(*body.PanelDomain))
 		if pd != "" {
@@ -63,6 +80,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, u *store.Us
 			return
 		}
 		out["panelDomain"] = pd
+		if pd == "" && s.httpsOnly(r.Context()) {
+			// No domain, no HTTPS address: plain HTTP must work again.
+			if err := s.setHTTPSOnly(r.Context(), false); err != nil {
+				s.storeErr(w, err)
+				return
+			}
+			out["httpsOnly"] = false
+		}
 	}
 	if body.WildcardDomain != nil {
 		wd := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(*body.WildcardDomain)), "*.")
@@ -81,6 +106,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, u *store.Us
 			return
 		}
 		out["wildcardDomain"] = wd
+	}
+	if body.HTTPSOnly != nil {
+		if err := s.setHTTPSOnly(r.Context(), *body.HTTPSOnly); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		out["httpsOnly"] = *body.HTTPSOnly
 	}
 	if err := s.deploy.SyncProxy(r.Context()); err != nil {
 		s.log.Error("proxy sync", "err", err)
@@ -176,7 +208,12 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.
 // while a deploy runs on a service that isn't up yet, and "deploy_failed"
 // when it never ran because its deploy failed.
 func (s *Server) appStatus(ctx context.Context, a *store.App) deploy.Status {
-	st := s.deploy.Status(ctx, a)
+	return s.withDeployState(ctx, a, s.deploy.Status(ctx, a))
+}
+
+// withDeployState turns "not deployed" into "deploying" or "deploy
+// failed" when the app's first deploy is running or failed.
+func (s *Server) withDeployState(ctx context.Context, a *store.App, st deploy.Status) deploy.Status {
 	if st.State != "not_deployed" {
 		return st
 	}
@@ -211,11 +248,16 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request, u *store.User)
 	}
 	out := make([]row, len(apps))
 	secrets := s.level(r.Context(), u, id) >= store.LevelDeploy
+	ptrs := make([]*store.App, len(apps))
+	for i := range apps {
+		ptrs[i] = &apps[i]
+	}
+	statuses := s.deploy.Statuses(r.Context(), ptrs)
 	for i := range apps {
 		if !secrets {
 			redactApp(&apps[i])
 		}
-		out[i] = row{App: apps[i], Status: s.appStatus(r.Context(), &apps[i])}
+		out[i] = row{App: apps[i], Status: s.withDeployState(r.Context(), &apps[i], statuses[apps[i].ID])}
 	}
 	writeJSON(w, 200, out)
 }
@@ -342,8 +384,8 @@ func (in *appInput) apply(a *store.App) error {
 	if in.CPULimit < 0 || in.CPULimit > 256 {
 		return errors.New("CPU limit must be between 0 and 256")
 	}
-	if in.MemoryMB < 0 || (in.MemoryMB > 0 && in.MemoryMB < 6) {
-		return errors.New("memory limit must be 0 (none) or at least 6 MB")
+	if in.MemoryMB < deploy.NoMemoryLimit || (in.MemoryMB > 0 && in.MemoryMB < deploy.MinMemoryMB) || in.MemoryMB > 1<<20 {
+		return fmt.Errorf("memory limit must be 0 (automatic), -1 (no limit) or at least %d MB", deploy.MinMemoryMB)
 	}
 	a.CPULimit, a.MemoryMB = in.CPULimit, in.MemoryMB
 	if _, err := deploy.SplitCommand(in.Command); err != nil {
@@ -404,8 +446,17 @@ func (in *appInput) apply(a *store.App) error {
 		if deploy.ValidPort(int(p.Published)) != nil || deploy.ValidPort(int(p.Target)) != nil {
 			return errors.New("ports must be between 1 and 65535")
 		}
-		if p.Published == 80 || p.Published == 443 || p.Published == 3000 {
+		if p.Published == 80 || p.Published == 443 || p.Published == 3000 || int(p.Published) == publicPort() {
 			return fmt.Errorf("port %d is used by SimplePanel; use a domain instead", p.Published)
+		}
+		// Swarm's routing mesh takes a published port before the server's
+		// own programs see it: publishing SSH's port would lock everyone
+		// out, and Swarm's own ports would break Docker networking.
+		switch p.Published {
+		case 22:
+			return errors.New("port 22 is the server's SSH port; publishing it would lock you out of the server")
+		case 2377, 7946, 4789:
+			return fmt.Errorf("port %d is used by Docker Swarm itself", p.Published)
 		}
 		a.Ports = append(a.Ports, p)
 	}
@@ -488,6 +539,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store
 		Image    string `json:"image"`
 		User     string `json:"user"`     // optional, generated if empty
 		Password string `json:"password"` // optional, generated if empty
+		MemoryMB int    `json:"memoryMb"` // 0 automatic, -1 no limit
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -507,13 +559,22 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if in.MemoryMB < deploy.NoMemoryLimit || (in.MemoryMB > 0 && in.MemoryMB < deploy.MinMemoryMB) {
+		writeErr(w, 400, fmt.Sprintf("memory limit must be 0 (automatic), -1 (no limit) or at least %d MB", deploy.MinMemoryMB))
+		return
+	}
 	a := deploy.NewDatabaseApp(e, p.ID, p.Name, in.Name, cred, store.RandomToken)
+	a.MemoryMB = in.MemoryMB
 	if in.Image = strings.TrimSpace(in.Image); in.Image != "" {
 		if err := deploy.ValidImage(in.Image); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
 		a.Image = in.Image
+	}
+	warn, ok := s.memoryGuard(w, r, u, a)
+	if !ok {
+		return
 	}
 	if err := s.store.CreateApp(r.Context(), a); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -528,7 +589,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store
 		s.storeErr(w, err)
 		return
 	}
-	writeJSON(w, 201, map[string]any{"app": a, "deployment": d})
+	writeJSON(w, 201, map[string]any{"app": a, "deployment": d, "warnings": warn})
 }
 
 // loadApp loads the app named by the {id} path value and checks that u
@@ -717,29 +778,48 @@ func (s *Server) deployApp(w http.ResponseWriter, r *http.Request, u *store.User
 	if !ok {
 		return
 	}
+	warn, ok := s.memoryGuard(w, r, u, a)
+	if !ok {
+		return
+	}
 	d, err := s.deploy.Deploy(r.Context(), a.ID, "manual")
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
-	writeJSON(w, 202, d)
+	writeJSON(w, 202, struct {
+		*store.Deployment
+		Warnings []string `json:"warnings,omitempty"`
+	}{d, warn})
 }
 
-func (s *Server) dockerAction(w http.ResponseWriter, err error) {
+func (s *Server) dockerAction(w http.ResponseWriter, err error, warn ...string) {
 	if errors.Is(err, docker.ErrNotFound) {
 		writeErr(w, 409, "the app isn't deployed yet; deploy it first")
+		return
+	}
+	if errors.Is(err, docker.ErrUnavailable) {
+		writeErr(w, 503, "Docker is not responding on this server, so nothing was changed. SimplePanel reconnects automatically; try again in a minute.")
 		return
 	}
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	out := map[string]any{"ok": true}
+	if len(warn) > 0 {
+		out["warnings"] = warn
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) restartApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if a, ok := s.loadApp(w, r, u, store.LevelDeploy); ok {
-		s.dockerAction(w, s.deploy.Restart(r.Context(), a))
+		warn, ok := s.memoryGuard(w, r, u, a)
+		if !ok {
+			return
+		}
+		s.dockerAction(w, s.deploy.Restart(r.Context(), a), warn...)
 	}
 }
 
@@ -751,7 +831,11 @@ func (s *Server) stopApp(w http.ResponseWriter, r *http.Request, u *store.User) 
 
 func (s *Server) startApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	if a, ok := s.loadApp(w, r, u, store.LevelDeploy); ok {
-		s.dockerAction(w, s.deploy.Scale(r.Context(), a, uint64(max(a.Replicas, 1))))
+		warn, ok := s.memoryGuard(w, r, u, a)
+		if !ok {
+			return
+		}
+		s.dockerAction(w, s.deploy.Scale(r.Context(), a, uint64(max(a.Replicas, 1))), warn...)
 	}
 }
 
@@ -1174,12 +1258,21 @@ func (s *Server) patchEnv(w http.ResponseWriter, r *http.Request, u *store.User)
 		writeErr(w, 400, err.Error())
 		return
 	}
+	var warn []string
+	if r.URL.Query().Get("deploy") == "1" { // check before saving, so a refusal changes nothing
+		if warn, ok = s.memoryGuard(w, r, u, a); !ok {
+			return
+		}
+	}
 	a.Env = env
 	if err := s.store.UpdateApp(r.Context(), a); err != nil {
 		s.storeErr(w, err)
 		return
 	}
 	out := map[string]any{"keys": envKeys(a.Env)}
+	if len(warn) > 0 {
+		out["warnings"] = warn
+	}
 	if r.URL.Query().Get("deploy") == "1" {
 		d, err := s.deploy.Deploy(r.Context(), a.ID, "env change")
 		if err != nil {
@@ -1189,4 +1282,11 @@ func (s *Server) patchEnv(w http.ResponseWriter, r *http.Request, u *store.User)
 		out["deployment"] = d
 	}
 	writeJSON(w, 200, out)
+}
+
+// publicPort is the port the panel is published on when the installer was
+// given another one than 3000 (SP_PORT), or 0.
+func publicPort() int {
+	n, _ := strconv.Atoi(os.Getenv("SP_PUBLIC_PORT"))
+	return n
 }

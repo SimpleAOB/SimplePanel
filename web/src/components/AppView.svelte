@@ -7,6 +7,7 @@
   import { parseLog } from '../lib/logs.js';
   import DomainStatus from './DomainStatus.svelte';
   import { formFromApp, payload, withDbUrl } from '../lib/appform.js';
+  import { guardedPost } from '../lib/memory.svelte.js';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -209,11 +210,14 @@
     return () => clearInterval(t);
   });
 
+  let notice = $state(''); // warnings from the server, e.g. about memory
   async function action(name, fn) {
     busy = name;
     error = '';
+    notice = '';
     try {
-      await fn();
+      const r = await fn();
+      if (r?.warnings?.length) notice = r.warnings.join(' ');
       await refresh(false);
       loadApps(pid).catch(() => {});
     } catch (err) {
@@ -225,8 +229,9 @@
 
   const deploy = () =>
     action('deploy', async () => {
-      const d = await api.post(`/apps/${aid}/deploy`);
+      const d = await guardedPost(`/apps/${aid}/deploy`);
       showDeployment(d.id);
+      return d;
     });
   let aiMsg = $state('');
   const toggleAI = () =>
@@ -234,9 +239,9 @@
       const r = await api.put(`/apps/${aid}/ai-access`, { enabled: !detail.aiAccess });
       aiMsg = r.warning || '';
     });
-  const restart = () => action('restart', () => api.post(`/apps/${aid}/restart`));
+  const restart = () => action('restart', () => guardedPost(`/apps/${aid}/restart`));
   const stop = () => action('stop', () => api.post(`/apps/${aid}/stop`));
-  const start = () => action('start', () => api.post(`/apps/${aid}/start`));
+  const start = () => action('start', () => guardedPost(`/apps/${aid}/start`));
 
   async function saveApp(fields, deployAfter) {
     saved = '';
@@ -246,8 +251,9 @@
       ok = true;
       saved = deployAfter ? 'Saved. Deploying…' : 'Saved. Deploy to apply the changes.';
       if (deployAfter) {
-        const d = await api.post(`/apps/${aid}/deploy`);
+        const d = await guardedPost(`/apps/${aid}/deploy`);
         showDeployment(d.id);
+        return d;
       }
     });
     // Keep what the person typed if the save failed, so they can fix it.
@@ -476,6 +482,8 @@
         {#if crash?.lines.length}<pre class="tail" use:scrollToError={crash.lines}>{crash.lines.join('\n')}</pre>{/if}
       </section>
     {/if}
+    {#if notice}<p class="notice">{notice}</p>{/if}
+    {#if detail.status.state === 'unknown' && detail.status.message && data.docker?.ok !== false}<p class="notice">{detail.status.message}</p>{/if}
 
     {#if isPreview}
       <section class="card preview-banner">
@@ -786,7 +794,7 @@
     {:else if tab === 'settings' && form}
       <form class="card" onsubmit={saveSettings}>
         <h3>{isDb ? 'Database settings' : 'App settings'}</h3>
-        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} bind:more />
+        <AppFields bind:value={form} hasToken={detail.app.hasGitToken} database={isDb} kind={detail.app.kind || 'app'} appId={detail.app.id} bind:more />
         {#if !ui.advanced}
           <div>
             <button type="button" class="linkish" onclick={() => (more = !more)}>{more ? 'Show fewer options' : 'Show more options'}</button>

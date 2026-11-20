@@ -596,7 +596,7 @@ var appFieldProps = map[string]any{
 	"spa":           prop("boolean", "Static sites: send unknown paths to index.html."),
 	"replicas":      prop("integer", "Number of containers, 0-50. Databases always run 1."),
 	"cpu_limit":     prop("number", "CPU cores limit, 0 for none."),
-	"memory_mb":     prop("integer", "Memory limit in MB, 0 for none."),
+	"memory_mb":     prop("integer", "Memory limit in MB. 0 = automatic (sized to the server), -1 = no limit."),
 	"command":       prop("string", "Override the image's command. Empty uses the default."),
 	"auto_domain":   prop("boolean", "Give the app an automatic subdomain (name-project.<wildcard domain>) when a wildcard domain is set. Default true for apps."),
 	"http_port":     prop("integer", "Container port the automatic subdomain sends traffic to. 0 uses the first domain's port, or 80."),
@@ -1240,6 +1240,9 @@ func init() {
 					}
 				}
 				if a.Deploy == nil || *a.Deploy {
+					if err := c.s.memoryPressure(); err != nil {
+						return nil, err
+					}
 					d, err := c.s.deploy.Deploy(c.ctx, app.ID, "mcp")
 					if err != nil {
 						return nil, err
@@ -1401,6 +1404,9 @@ func init() {
 				}
 				out := map[string]any{"saved": true, "envKeys": envKeys(in.Env)}
 				if a.Deploy {
+					if err := c.s.memoryPressure(); err != nil {
+						return nil, err
+					}
 					d, err := c.s.deploy.Deploy(c.ctx, app.ID, "mcp")
 					if err != nil {
 						return nil, err
@@ -1487,6 +1493,9 @@ func init() {
 				}
 				app, err := c.service(a.Service)
 				if err != nil {
+					return nil, err
+				}
+				if err := c.s.memoryPressure(); err != nil {
 					return nil, err
 				}
 				d, err := c.s.deploy.Deploy(c.ctx, app.ID, "mcp")

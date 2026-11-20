@@ -298,9 +298,17 @@ func (m *Manager) replaceVolumes(ctx context.Context, app *store.App, script str
 	restart := func() {
 		if running {
 			log("Starting %s again", app.Name)
-			if err := m.Scale(context.WithoutCancel(ctx), app, uint64(max(app.Replicas, 1))); err != nil {
-				log("Couldn't start it again: %v", err)
+			// Sent even if Docker looks unresponsive, and retried: leaving
+			// the app stopped after a restore is the worst outcome.
+			cctx := docker.Cleanup(context.WithoutCancel(ctx))
+			var err error
+			for i, wait := 0, 2*time.Second; i < 5; i, wait = i+1, wait*2 {
+				if err = m.Scale(cctx, app, uint64(max(app.Replicas, 1))); err == nil {
+					return
+				}
+				time.Sleep(wait)
 			}
+			log("Couldn't start it again: %v. Start it from its page.", err)
 		}
 	}
 	defer restart()

@@ -351,7 +351,8 @@ func (m *Monitor) serviceSamples(ctx context.Context, now time.Time, apps map[in
 		st  *docker.Stats
 	}
 	results := make(chan result, len(ctrs))
-	sem := make(chan struct{}, 8)
+	// Leave most of the Docker client's request slots to the UI.
+	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	for _, c := range ctrs {
 		appID := docker.AppIDLabel(c)
@@ -547,8 +548,13 @@ func (m *Monitor) checkServices(ctx context.Context, samples []store.Sample, app
 		}
 	}
 	// Crash loops: a service whose tasks keep failing.
+	list := make([]*store.App, 0, len(apps))
 	for _, a := range apps {
-		st := m.deploy.Status(ctx, a)
+		list = append(list, a)
+	}
+	statuses := m.deploy.Statuses(ctx, list)
+	for _, a := range apps {
+		st := statuses[a.ID]
 		m.mu.Lock()
 		was := m.down[a.ID]
 		isDown := st.State == "failing"
@@ -569,4 +575,41 @@ func (m *Monitor) checkServices(ctx context.Context, samples []store.Sample, app
 			m.send(ev)
 		}
 	}
+}
+
+// MemInfo is the server's memory right now, in bytes.
+type MemInfo struct {
+	Total     int64
+	Available int64
+	SwapTotal int64
+	SwapFree  int64
+}
+
+// Memory reads the server's memory from /proc/meminfo.
+func (m *Monitor) Memory() (MemInfo, error) {
+	var mi MemInfo
+	f, err := os.Open(m.proc("meminfo"))
+	if err != nil {
+		return mi, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		k, v, ok := strings.Cut(sc.Text(), ":")
+		if !ok {
+			continue
+		}
+		n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimSpace(v), " kB"), 10, 64)
+		switch k {
+		case "MemTotal":
+			mi.Total = n << 10
+		case "MemAvailable":
+			mi.Available = n << 10
+		case "SwapTotal":
+			mi.SwapTotal = n << 10
+		case "SwapFree":
+			mi.SwapFree = n << 10
+		}
+	}
+	return mi, sc.Err()
 }

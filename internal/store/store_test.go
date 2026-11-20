@@ -77,3 +77,37 @@ func TestAppsDomainsCascade(t *testing.T) {
 		t.Fatal("domains should cascade on project delete")
 	}
 }
+
+func TestPruneDeployments(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	p, err := s.CreateProject(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{ProjectID: p.ID, Name: "web", Kind: "app"}
+	if err := s.CreateApp(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	var last *Deployment
+	for i := 0; i < KeepDeployments+10; i++ {
+		d, err := s.CreateDeployment(ctx, a.ID, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 3 { // old but unfinished: kept
+			continue
+		}
+		_ = s.UpdateDeployment(ctx, d.ID, "success", "", "log", true)
+		last = d
+	}
+	if err := s.PruneDeployments(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := s.Deployments(ctx, a.ID, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != KeepDeployments+3 || ds[0].ID != last.ID {
+		t.Fatalf("kept %d deployments (newest %d), want %d", len(ds), ds[0].ID, KeepDeployments+3)
+	}
+}

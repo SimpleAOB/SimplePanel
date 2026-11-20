@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -16,6 +18,17 @@ const bcryptCost = 12
 // dummyHash is compared against when a username doesn't exist, so login
 // timing doesn't reveal which usernames are valid.
 var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("simplepanel-dummy-password"), bcryptCost)
+
+// bcryptSlots bounds how many password checks run at once. Each takes a
+// few hundred milliseconds of CPU; on a 1-core server a flood of sign-in
+// attempts from many addresses would otherwise starve the apps.
+var bcryptSlots = make(chan struct{}, 2)
+
+func checkPassword(hash []byte, password string) bool {
+	bcryptSlots <- struct{}{}
+	defer func() { <-bcryptSlots }()
+	return bcrypt.CompareHashAndPassword(hash, []byte(password)) == nil
+}
 
 func validPassword(p string) error {
 	if len(p) < 10 {
@@ -126,13 +139,21 @@ func (s *Server) getSetup(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"needsSetup": n == 0})
+	writeJSON(w, 200, map[string]bool{"needsSetup": n == 0, "needsCode": n == 0 && setupCode() != ""})
 }
 
 type credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Code     string `json:"code"` // setup code, see setupCode
 }
+
+// setupCode is the one-time code the installer prints. Until the admin
+// account exists, anyone who can reach the panel could claim the server
+// (and with it Docker, which is root on the host); the code means only
+// the person who ran the installer can. Installs made before the code
+// existed have none and work as before.
+func setupCode() string { return strings.TrimSpace(os.Getenv("SP_SETUP_CODE")) }
 
 func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 	if !s.loginLimit.Allow("setup:" + clientIP(r)) {
@@ -141,6 +162,10 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
+		return
+	}
+	if want := setupCode(); want != "" && subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(c.Code))), []byte(strings.ToUpper(want))) != 1 {
+		writeErr(w, 403, "wrong setup code; it's in the installer's output")
 		return
 	}
 	c.Username = strings.TrimSpace(strings.ToLower(c.Username))
@@ -175,35 +200,31 @@ func (s *Server) postSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	// Only failed attempts count, per address. There is deliberately no
+	// server-wide limit: one would let anyone lock the owner out by
+	// guessing from a few addresses. bcrypt's CPU cost is bounded by
+	// checkPassword instead.
 	ip := clientIP(r)
-	// Only failed attempts count, so signing in and out a few times never
-	// locks anyone out. The server-wide cap is higher than the per-IP one.
-	if s.loginLimit.Blocked("login:"+ip) || s.loginGlobal.Blocked("login") {
-		writeErr(w, 429, "too many failed sign-ins, try again in 5 minutes")
+	if s.loginFails.Blocked("login:" + ip) {
+		writeErr(w, 429, "too many failed attempts, try again in a few minutes")
 		return
-	}
-	fail := func() {
-		s.loginLimit.Allow("login:" + ip)
-		s.loginGlobal.Allow("login")
-		s.log.Warn("failed login", "ip", ip)
-		writeErr(w, 401, "wrong username or password")
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
 		return
 	}
+	fail := func() {
+		s.loginFails.Allow("login:" + ip)
+		s.log.Warn("failed login", "ip", ip)
+		writeErr(w, 401, "wrong username or password")
+	}
 	u, hash, err := s.store.UserByName(r.Context(), strings.TrimSpace(strings.ToLower(c.Username)))
-	if err != nil {
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
+	if err != nil || hash == "" { // unknown, or invited and hasn't set a password yet
+		checkPassword(dummyHash, c.Password)
 		fail()
 		return
 	}
-	if hash == "" { // invited, hasn't set a password yet
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
-		fail()
-		return
-	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil {
+	if !checkPassword([]byte(hash), c.Password) {
 		fail()
 		return
 	}

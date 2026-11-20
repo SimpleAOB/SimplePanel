@@ -13,10 +13,18 @@
   let ip = $state('');
   let savedPanel = $state('');
   let savedWildcard = $state('');
+  let savedDomain = $state('');
+  let httpsOnly = $state(false);
+  let viaHttps = $state(false);
+  let hmsg = $state('');
+  let herr = $state('');
 
   onMount(async () => {
     const s = await api.get('/system');
     panelDomain = s.panelDomain || '';
+    savedDomain = panelDomain;
+    httpsOnly = !!s.httpsOnly;
+    viaHttps = !!s.viaHttps;
     wildcard = s.wildcardDomain || '';
     savedPanel = panelDomain;
     savedWildcard = wildcard;
@@ -40,13 +48,26 @@
     e.preventDefault();
     msg = err = '';
     try {
-      await api.put('/settings', { panelDomain });
+      const r = await api.put('/settings', { panelDomain });
       savedPanel = panelDomain;
+      savedDomain = panelDomain;
+      if (r.httpsOnly === false) httpsOnly = false;
       msg = panelDomain
         ? `Saved. Once DNS for ${panelDomain} points at this server, open https://${panelDomain}.`
         : 'Saved. The panel is only reachable on port 3000.';
     } catch (e2) {
       err = e2.message;
+    }
+  }
+
+  async function setHttpsOnly(on) {
+    hmsg = herr = '';
+    try {
+      await api.put('/settings', { httpsOnly: on });
+      httpsOnly = on;
+      hmsg = on ? `Plain HTTP is off. Use https://${savedDomain} from now on.` : 'Plain HTTP on port 3000 works again.';
+    } catch (e2) {
+      herr = e2.message;
     }
   }
 
@@ -81,6 +102,26 @@
   {#if savedPanel}{#key savedPanel}<DomainStatus host={savedPanel} serverIp={ip} />{/key}{/if}
   {#if msg}<p class="ok">{msg}</p>{/if}
   {#if err}<p class="error">{err}</p>{/if}
+  {#if savedDomain}
+    <div class="https">
+      <label class="check">
+        <input type="checkbox" checked={httpsOnly} disabled={!httpsOnly && !viaHttps} onchange={(e) => setHttpsOnly(e.currentTarget.checked)} />
+        HTTPS only: turn off plain HTTP on port 3000
+      </label>
+      <small class="faint">
+        {#if httpsOnly}
+          Passwords and API tokens only travel encrypted. Visits to port 3000 are sent to https://{savedDomain}. Locked out?
+          An SSH tunnel to port 3000 still works, and clearing the panel domain turns this off.
+        {:else if viaHttps}
+          Recommended: sign-ins and AI/API tokens on port 3000 travel unencrypted. You can then close port 3000 in your firewall too.
+        {:else}
+          Open <a href="https://{savedDomain}/#/settings/general">https://{savedDomain}</a> to turn this on. That proves the HTTPS address works, so you can't lock yourself out.
+        {/if}
+      </small>
+      {#if hmsg}<p class="ok">{hmsg}</p>{/if}
+      {#if herr}<p class="error">{herr}</p>{/if}
+    </div>
+  {/if}
 </form>
 
 <form class="card" onsubmit={saveWildcard}>
@@ -110,3 +151,20 @@
   {#if wmsg}<p class="ok">{wmsg}</p>{/if}
   {#if werr}<p class="error">{werr}</p>{/if}
 </form>
+
+<style>
+  .https {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-space-1);
+    margin-top: var(--sp-space-3);
+    padding-top: var(--sp-space-3);
+    border-top: 1px solid var(--sp-border);
+  }
+  .check {
+    display: flex;
+    gap: var(--sp-space-2);
+    align-items: center;
+    font-size: var(--sp-text-sm);
+  }
+</style>

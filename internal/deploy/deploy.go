@@ -48,21 +48,29 @@ type Manager struct {
 
 	mu       sync.Mutex
 	appLocks map[int64]*sync.Mutex
-	builds   chan struct{} // limits concurrent builds
+	queued   map[int64]int64 // app ID -> deployment waiting to start
+	builds   chan struct{}   // limits concurrent builds
 	proxyMu  sync.Mutex
 	netMu    sync.Mutex // serialises project network creation
 	runsMu   sync.Mutex // serialises launch bookkeeping (see runs.go)
+	snapMu   sync.Mutex
+	snap     *swarmSnapshot
+	snapGen  int         // bumped by InvalidateStatus
+	snapNext *snapFlight // the read in progress, if any
 
 	// OnDeploy, if set, is called when a deployment finishes.
 	OnDeploy func(app *store.App, d *store.Deployment)
 	// OnCommit, if set, is called once a Git build knows its commit.
 	OnCommit func(app *store.App, depID int64, sha string)
+	// Capacity, if set, describes the server's memory. Services without
+	// their own memory limit get one sized to it (see resources.go).
+	Capacity func() Capacity
 	// GitAuth returns a clone token for apps linked to a Git provider.
 	GitAuth func(ctx context.Context, app *store.App) (string, error)
 }
 
 func NewManager(cfg Config, st *store.Store, dc *docker.Client, log *slog.Logger) *Manager {
-	return &Manager{cfg: cfg, store: st, docker: dc, log: log, appLocks: map[int64]*sync.Mutex{}, builds: make(chan struct{}, 2)}
+	return &Manager{cfg: cfg, store: st, docker: dc, log: log, appLocks: map[int64]*sync.Mutex{}, queued: map[int64]int64{}, builds: make(chan struct{}, 2)}
 }
 
 func (m *Manager) lockApp(id int64) *sync.Mutex {
@@ -77,11 +85,24 @@ func (m *Manager) lockApp(id int64) *sync.Mutex {
 }
 
 // Deploy queues a deployment and runs it in the background.
+//
+// While a deployment of the app is already waiting to start, another
+// request joins it instead of queueing one more build: the waiting one
+// reads the app's latest settings and commit when it starts anyway. This
+// stops a burst of webhooks or clicks from queueing build after build.
 func (m *Manager) Deploy(ctx context.Context, appID int64, trigger string) (*store.Deployment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id, ok := m.queued[appID]; ok {
+		if d, err := m.store.Deployment(ctx, id); err == nil && d.Status == "queued" {
+			return d, nil
+		}
+	}
 	d, err := m.store.CreateDeployment(ctx, appID, trigger)
 	if err != nil {
 		return nil, err
 	}
+	m.queued[appID] = d.ID
 	go m.run(appID, d.ID)
 	return d, nil
 }
@@ -132,6 +153,11 @@ func (m *Manager) run(appID, depID int64) {
 	lock := m.lockApp(appID)
 	lock.Lock()
 	defer lock.Unlock()
+	m.mu.Lock()
+	if m.queued[appID] == depID {
+		delete(m.queued, appID)
+	}
+	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -434,6 +460,13 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 	if fi, err := os.Stat(ctxDir); err != nil || !fi.IsDir() {
 		return "", fmt.Errorf("build path %s does not exist in the repository", app.BuildPath)
 	}
+	// The build path must stay inside the clone: a repository can contain
+	// a symlink such as "app -> /data", and following it would send the
+	// panel's own files to the build.
+	ctxDir, err = insideRepo(repo, ctxDir)
+	if err != nil {
+		return "", fmt.Errorf("build path %s: %w", app.BuildPath, err)
+	}
 	dockerfile := orDefault(app.Dockerfile, "Dockerfile")
 	switch ResolveBuildType(app.BuildType, ctxDir, app.Dockerfile) {
 	case "dockerfile":
@@ -473,10 +506,14 @@ func (m *Manager) buildGit(ctx context.Context, app *store.App, depID int64, lb 
 	for _, r := range regs {
 		lb.addSecret(r.Password)
 	}
+	buildMem := m.buildMemoryMB()
+	if buildMem > 0 {
+		lb.Printf("Build memory limit: %d MB", buildMem)
+	}
 	build := func(noPull bool) error {
 		pr, pw := io.Pipe()
 		go func() { pw.CloseWithError(tarDir(ctxDir, pw)) }()
-		err := m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile, NoPull: noPull, Registries: regs}, lb)
+		err := m.docker.ImageBuild(ctx, pr, docker.BuildOptions{Tag: tag, Dockerfile: dockerfile, NoPull: noPull, Registries: regs, MemoryMB: buildMem}, lb)
 		pr.Close()
 		return err
 	}
@@ -532,6 +569,24 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// insideRepo resolves symlinks in dir and checks that it is repo or a
+// folder inside it.
+func insideRepo(repo, dir string) (string, error) {
+	realRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(realRepo, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", errors.New("it points outside the repository (through a symbolic link)")
+	}
+	return real, nil
 }
 
 // tarDir streams dir as a tar archive, skipping .git. Symlinks are stored as
@@ -637,10 +692,10 @@ func (m *Manager) ServiceSpec(app *store.App, image string) (docker.ServiceSpec,
 		spec.UpdateConfig.Order = "stop-first"
 		spec.RollbackConfig.Order = "stop-first"
 	}
-	if app.CPULimit > 0 || app.MemoryMB > 0 {
+	if mem := m.memoryLimitMB(app); app.CPULimit > 0 || mem > 0 {
 		spec.TaskTemplate.Resources = &docker.Resources{Limits: &docker.Limits{
 			NanoCPUs:    int64(app.CPULimit * 1e9),
-			MemoryBytes: int64(app.MemoryMB) << 20,
+			MemoryBytes: int64(mem) << 20,
 		}}
 	}
 	publishMode := "ingress"
@@ -658,6 +713,7 @@ func (m *Manager) ServiceSpec(app *store.App, image string) (docker.ServiceSpec,
 // applyService creates or updates the app's service. auth (nil for none)
 // is handed to Swarm so every node can pull the image.
 func (m *Manager) applyService(ctx context.Context, app *store.App, image string, auth *docker.RegistryAuth, lb *logBuf) error {
+	defer m.InvalidateStatus()
 	spec, err := m.ServiceSpec(app, image)
 	if err != nil {
 		return err
@@ -773,6 +829,7 @@ func (m *Manager) waitHealthy(ctx context.Context, name, image string, lb *logBu
 
 // Restart forces a rolling restart of the app's tasks without rebuilding.
 func (m *Manager) Restart(ctx context.Context, app *store.App) error {
+	defer m.InvalidateStatus()
 	svc, err := m.docker.ServiceInspect(ctx, app.ServiceName())
 	if err != nil {
 		return err
@@ -783,6 +840,7 @@ func (m *Manager) Restart(ctx context.Context, app *store.App) error {
 
 // Scale sets the replica count on the running service (0 stops the app).
 func (m *Manager) Scale(ctx context.Context, app *store.App, replicas uint64) error {
+	defer m.InvalidateStatus()
 	svc, err := m.docker.ServiceInspect(ctx, app.ServiceName())
 	if err != nil {
 		return err
@@ -796,6 +854,7 @@ func (m *Manager) Scale(ctx context.Context, app *store.App, replicas uint64) er
 
 // Remove deletes the app's service. Named volumes are kept on purpose.
 func (m *Manager) Remove(ctx context.Context, app *store.App) error {
+	defer m.InvalidateStatus()
 	lock := m.lockApp(app.ID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -824,19 +883,115 @@ type Status struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Status reports one app's state. See Statuses.
 func (m *Manager) Status(ctx context.Context, app *store.App) Status {
-	svc, err := m.docker.ServiceInspect(ctx, app.ServiceName())
-	if errors.Is(err, docker.ErrNotFound) {
-		return Status{State: "not_deployed"}
+	return m.Statuses(ctx, []*store.App{app})[app.ID]
+}
+
+// swarmSnapshot is every SimplePanel service and its tasks, read with two
+// Docker calls and shared by everyone asking within snapshotTTL, so that
+// listing a project or polling the UI costs the same with 3 apps or 300.
+type swarmSnapshot struct {
+	at       time.Time
+	err      error
+	services map[string]*docker.Service
+	tasks    map[string][]docker.Task // by service ID
+}
+
+const snapshotTTL = 2 * time.Second
+
+// snapFlight is one read of Swarm that every caller asking meanwhile waits
+// for, each only as long as it wants to.
+type snapFlight struct {
+	done chan struct{}
+	s    *swarmSnapshot
+	gen  int
+}
+
+func (m *Manager) snapshot(ctx context.Context) *swarmSnapshot {
+	m.snapMu.Lock()
+	if s := m.snap; s != nil && time.Since(s.at) < snapshotTTL {
+		m.snapMu.Unlock()
+		return s
 	}
-	if err != nil {
-		return Status{State: "unknown", Message: err.Error()}
+	f := m.snapNext
+	if f == nil || f.gen != m.snapGen { // none, or started before a change
+		f = &snapFlight{done: make(chan struct{}), gen: m.snapGen}
+		m.snapNext = f
+		go m.readSwarm(f)
 	}
+	m.snapMu.Unlock()
+	select {
+	case <-f.done:
+		return f.s
+	case <-ctx.Done():
+		return &swarmSnapshot{err: ctx.Err(), at: time.Now()}
+	}
+}
+
+// readSwarm reads every SimplePanel service and its tasks. It doesn't use
+// a caller's context, so one page closing doesn't fail the read for the
+// others; the Docker client's own timeout bounds it.
+func (m *Manager) readSwarm(f *snapFlight) {
+	ctx := context.Background()
+	s := &swarmSnapshot{services: map[string]*docker.Service{}, tasks: map[string][]docker.Task{}}
+	svcs, err := m.docker.ServicesByLabel(ctx, "simplepanel.managed")
+	if err == nil {
+		names := make([]string, 0, len(svcs))
+		for i := range svcs {
+			s.services[svcs[i].Spec.Name] = &svcs[i]
+			names = append(names, svcs[i].ID)
+		}
+		var tasks []docker.Task
+		tasks, err = m.docker.TasksOf(ctx, names)
+		for _, t := range tasks {
+			s.tasks[t.ServiceID] = append(s.tasks[t.ServiceID], t)
+		}
+	}
+	s.err, s.at = err, time.Now()
+	m.snapMu.Lock()
+	if m.snapGen == f.gen { // nothing changed while reading
+		m.snap = s
+	}
+	if m.snapNext == f {
+		m.snapNext = nil
+	}
+	m.snapMu.Unlock()
+	f.s = s
+	close(f.done)
+}
+
+// Statuses reports the state of several apps, keyed by app ID.
+func (m *Manager) Statuses(ctx context.Context, apps []*store.App) map[int64]Status {
+	out := make(map[int64]Status, len(apps))
+	if len(apps) == 0 {
+		return out
+	}
+	snap := m.snapshot(ctx)
+	for _, app := range apps {
+		if snap.err != nil {
+			msg := snap.err.Error()
+			if errors.Is(snap.err, docker.ErrUnavailable) {
+				msg = "Docker is not responding, so SimplePanel can't tell whether this service is running. It will reconnect automatically."
+			}
+			out[app.ID] = Status{State: "unknown", Message: msg}
+			continue
+		}
+		svc := snap.services[app.ServiceName()]
+		if svc == nil {
+			out[app.ID] = Status{State: "not_deployed"}
+			continue
+		}
+		out[app.ID] = taskStatus(svc, snap.tasks[svc.ID])
+	}
+	return out
+}
+
+func taskStatus(svc *docker.Service, tasks []docker.Task) Status {
 	st := Status{}
 	if svc.Spec.Mode.Replicated != nil {
 		st.Desired = int(svc.Spec.Mode.Replicated.Replicas)
 	}
-	tasks, _ := m.docker.ServiceTasks(ctx, app.ServiceName())
 	var lastErr string
 	var lastErrAt time.Time
 	for _, t := range tasks {
@@ -854,10 +1009,21 @@ func (m *Manager) Status(ctx context.Context, app *store.App) Status {
 		st.State = "running"
 	case lastErr != "" && time.Since(lastErrAt) < 2*time.Minute:
 		st.State, st.Message = "failing", lastErr
+		if strings.Contains(lastErr, "(137)") {
+			st.Message += ": it was stopped for using too much memory, or killed. If it keeps happening, raise its memory limit (Advanced view)."
+		}
 	default:
 		st.State = "starting"
 	}
 	return st
+}
+
+// InvalidateStatus drops the cached Swarm snapshot after a change.
+func (m *Manager) InvalidateStatus() {
+	m.snapMu.Lock()
+	m.snap = nil
+	m.snapGen++
+	m.snapMu.Unlock()
 }
 
 // Logs returns recent log lines for the app.

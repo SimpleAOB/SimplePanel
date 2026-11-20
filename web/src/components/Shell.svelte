@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { ui, data, loadProjects, loadApps } from '../lib/state.svelte.js';
+  import { ui, data, loadProjects, loadApps, loadDocker } from '../lib/state.svelte.js';
   import Rail from './Rail.svelte';
   import Sidebar from './Sidebar.svelte';
   import Home from './Home.svelte';
@@ -10,9 +10,19 @@
   import Settings from './Settings.svelte';
   import DetailPanel from './DetailPanel.svelte';
   import UpdateBanner from './UpdateBanner.svelte';
+  import DockerBanner from './DockerBanner.svelte';
+  import MemoryPrompt from './MemoryPrompt.svelte';
   import UpdateDialog from './UpdateDialog.svelte';
   import { isAdmin } from '../lib/state.svelte.js';
   import { upd, loadUpdate, follow } from '../lib/update.svelte.js';
+
+  // Docker's health: checked every 10 s (a cheap request that never waits
+  // on Docker), so a stuck Docker shows a banner instead of empty lists.
+  onMount(() => {
+    loadDocker();
+    const t = setInterval(loadDocker, 10000);
+    return () => clearInterval(t);
+  });
 
   onMount(() => {
     loadProjects();
@@ -67,6 +77,7 @@
     <button class="scrim" aria-label="Close menu" onclick={() => (ui.navOpen = false)}></button>
   {/if}
   <main class="main" bind:this={mainEl}>
+    <DockerBanner />
     <UpdateBanner />
     {#if ui.route.view === 'home'}
       <Home />
@@ -84,6 +95,7 @@
     {#key ui.route.appId}<DetailPanel />{/key}
   {/if}
 </div>
+<MemoryPrompt />
 {#if upd.open && (upd.status?.check?.latest || upd.progress)}
   <UpdateDialog />
 {/if}
