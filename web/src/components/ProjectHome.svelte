@@ -42,8 +42,6 @@
     {project.name}
     {#snippet actions()}
       {#if level >= 2}
-        <button class="btn hide-sm" onclick={() => (dialog = 'import')}>Import</button>
-        <button class="btn hide-sm" onclick={() => (dialog = 'export')}>Export</button>
         <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}><Icon name="plus" size={16} /> New</button>
       {/if}
     {/snippet}
@@ -53,8 +51,12 @@
       <div class="card empty">
         {#if level >= 2}
           <h2>Add your first app</h2>
-          <p class="muted">Deploy from a Git repository (Dockerfile or static site), run any Docker image, or create a Postgres, MySQL, MongoDB or Redis database.</p>
-          <div><button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button></div>
+          <p class="muted">Deploy a website or app from a Git repository or a Docker image. If it needs a database, create one here too: apps and databases in the same project can talk to each other privately.</p>
+          <div class="row">
+            <button class="btn primary" onclick={() => go(`/p/${project.id}/new`)}>New app</button>
+            <button class="btn" onclick={() => go(`/p/${project.id}/new/database`)}>New database</button>
+          </div>
+          <small class="faint">Moving from another server? <button class="linkish" onclick={() => (dialog = 'import')}>Import a service</button> from its JSON export.</small>
         {:else}
           <h2>Nothing here yet</h2>
           <p class="muted">This project has no apps or databases.</p>
@@ -85,7 +87,7 @@
       </div>
     {/if}
 
-    {#if level >= 2}
+    {#if level >= 2 && apps.length > 0}
     <section class="card transfer">
       <div>
         <h3>Export and import</h3>
@@ -98,10 +100,10 @@
     </section>
     {/if}
 
-    {#if ui.advanced && isAdmin()}
+    {#if isAdmin()}
       <section class="card danger-zone">
         <h3>Delete project</h3>
-        <p class="muted">Removes every app in this project and its domains. Volumes are kept.</p>
+        <p class="muted">Removes every app and database in this project, and their domains. Their data stays in Docker volumes on the server's disk.</p>
         <div class="row">
           <label class="field">
             <span>Type the project name to confirm</span>

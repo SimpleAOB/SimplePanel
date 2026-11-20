@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // Right-hand panel: app logs (all running containers, or one launch,
   // past or present) and deployment build logs. Resizable, searchable and
   // downloadable; extra filters show in advanced view.
@@ -16,8 +17,10 @@
     saveLogPrefs,
     showDeployment,
     timeAgo,
+    depLabel,
+    depDot,
   } from '../lib/state.svelte.js';
-  import { matcher, saveText, download, stamp, runLabel, runDot, duration, bytes } from '../lib/logs.js';
+  import { matcher, saveText, download, stamp, runLabel, runDot, duration, bytes, stripAnsi } from '../lib/logs.js';
   import Icon from './Icon.svelte';
   import LogView from './LogView.svelte';
 
@@ -42,7 +45,9 @@
   let live = $derived(panel.tab === 'logs' ? !run || !run.archived : dep && (dep.status === 'running' || dep.status === 'queued'));
   let search = $derived(matcher(query, logPrefs));
   let re = $derived(search?.re || null);
-  let text = $derived(panel.tab === 'logs' ? logs : dep?.log || '');
+  let text = $derived(panel.tab === 'logs' ? logs : stripAnsi(dep?.log || ''));
+  // Databases and image apps are pulled, not built.
+  let pulled = $derived(!!app && (app.source === 'image' || (app.kind && app.kind !== 'app')));
 
   // ---- Loading ----
 
@@ -93,8 +98,22 @@
     if (!panel.deploymentId) return;
     try {
       const d = await api.get(`/deployments/${panel.deploymentId}`);
-      dep = d.appId === aid ? d : null;
+      if (d.appId !== aid) {
+        // Left over from another app: show this app's newest deployment.
+        panel.deploymentId = 0;
+        dep = null;
+        await loadDeps();
+        if (panel.deploymentId) loadDep();
+        return;
+      }
+      dep = d;
       error = '';
+      // Keep the picker's label in step with the deployment it shows.
+      if (dep) {
+        const i = deps.findIndex((x) => x.id === dep.id);
+        if (i < 0) loadDeps();
+        else if (deps[i].status !== dep.status) deps[i] = { ...deps[i], status: dep.status };
+      }
     } catch (err) {
       error = err.message;
     }
@@ -188,7 +207,7 @@
 
   async function copyShown() {
     try {
-      await navigator.clipboard.writeText(shown.map((l) => l.raw).join('\n'));
+      await copyText(shown.map((l) => l.raw).join('\n'));
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch {
@@ -294,7 +313,7 @@
   <header>
     <div class="segmented">
       <button class:active={panel.tab === 'logs'} onclick={() => switchTab('logs')}>App logs</button>
-      <button class:active={panel.tab === 'deploy'} onclick={() => switchTab('deploy')}>Build log</button>
+      <button class:active={panel.tab === 'deploy'} onclick={() => switchTab('deploy')}>{pulled ? 'Deploy log' : 'Build log'}</button>
     </div>
     <div class="head-actions">
       <button class="btn ghost icon wide-btn" aria-label={wide ? 'Make panel narrower' : 'Make panel wider'} title={wide ? 'Narrower' : 'Wider'} onclick={toggleWide}>
@@ -320,7 +339,7 @@
       <select aria-label="Which deployment" value={panel.deploymentId} onchange={pickDep}>
         {#if !deps.length}<option value={0}>No deployments yet</option>{/if}
         {#each deps as d (d.id)}
-          <option value={d.id}>Deployment #{d.id} · {d.status} · {timeAgo(d.createdAt)}</option>
+          <option value={d.id}>Deployment #{d.id} · {depLabel(d.status)} · {timeAgo(d.createdAt)}</option>
         {/each}
       </select>
     {/if}
@@ -345,7 +364,7 @@
     {#if run.truncated}<p class="note">Only the last {bytes(run.logBytes)} of this launch's output was kept.</p>{/if}
   {:else if panel.tab === 'deploy' && dep}
     <div class="meta">
-      <span class="dot {dep.status}"></span> <span>{dep.status}</span>
+      <span class="dot {depDot(dep.status)}"></span> <span>{depLabel(dep.status)}</span>
       <span class="faint">· {dep.trigger}{dep.commitSha ? ` · ${dep.commitSha.slice(0, 7)}` : ''}</span>
     </div>
   {/if}

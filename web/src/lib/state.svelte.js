@@ -114,9 +114,32 @@ function parseHash() {
   return r;
 }
 
+// A page with unsaved edits sets a guard; it returns true while there is
+// something to lose. Leaving that page then asks first.
+let leaveGuard = null;
+export function setLeaveGuard(fn) {
+  leaveGuard = fn;
+}
+
 export function startRouter() {
+  let lastHash = location.hash;
+  window.addEventListener('beforeunload', (e) => {
+    if (leaveGuard?.()) e.preventDefault();
+  });
   window.addEventListener('hashchange', () => {
+    const prev = ui.route;
+    const next = parseHash();
+    const samePage = next.view === prev.view && next.appId === prev.appId;
+    if (!samePage && leaveGuard?.() && !confirm('You have unsaved changes. Leave without saving them?')) {
+      history.replaceState(null, '', lastHash);
+      return;
+    }
+    lastHash = location.hash;
     ui.route = parseHash();
+    // On a phone the panel covers the page; going to another app or
+    // database (from the menu or with Back) shows that page, not the old
+    // app's panel.
+    if (window.innerWidth <= 1100 && ui.route.appId !== prev.appId) ui.panelOpen = false;
     ui.navOpen = false;
   });
 }
@@ -170,6 +193,11 @@ export function timeAgo(unix) {
 
 // Right-hand detail panel: app logs or a deployment's build log.
 export const panel = $state({ tab: 'logs', deploymentId: 0, run: 0, appId: 0 });
+
+// How a deployment's status reads, and the dot it gets ("running" would
+// look like a healthy app).
+export const depLabel = (s) => ({ queued: 'waiting', running: 'in progress' })[s] || s;
+export const depDot = (s) => (s === 'running' || s === 'queued' ? 'deploying' : s);
 
 export function showDeployment(id) {
   panel.tab = 'deploy';

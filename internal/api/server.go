@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/git/github/callback", s.githubCallback)
 	mux.HandleFunc("GET /api/git/github/setup", s.githubSetup)
 	mux.HandleFunc("GET /api/invite/{token}", s.getInvite)
+	mux.HandleFunc("GET "+deploy.CheckPath+"{token}", s.serveCheck)
 	mux.HandleFunc("POST /api/invite/{token}", s.acceptInvite)
 	mux.HandleFunc("/mcp", s.mcp) // authenticated with API tokens, see mcp.go
 
@@ -190,6 +191,8 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/apps/{id}/webhook/rotate", s.rotateWebhook)
 	a("PUT /api/apps/{id}/ai-access", s.setAIAccess)
 	a("DELETE /api/domains/{id}", s.deleteDomain)
+	a("PUT /api/domains/{id}", s.updateDomain)
+	a("GET /api/dns/check", s.dnsCheck)
 	a("GET /api/services/{project}/{name}", s.getAppByName)
 	a("PATCH /api/apps/{id}/env", s.patchEnv)
 

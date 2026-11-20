@@ -1,3 +1,4 @@
+import { api } from './api.js';
 // Helpers to convert between the API's app object and the form model.
 
 export function emptyForm() {
@@ -68,4 +69,13 @@ export function payload(f) {
       .filter((p) => p.published || p.target)
       .map((p) => ({ published: Number(p.published), target: Number(p.target), protocol: p.protocol })),
   };
+}
+
+// Adds a database's connection URL to an env text, as DATABASE_URL (or
+// MONGODB_URI / REDIS_URL).
+export async function withDbUrl(env, dbId) {
+  const d = await api.get(`/apps/${dbId}`);
+  const v = { mongo: 'MONGODB_URI', redis: 'REDIS_URL' }[d.database?.engine] || 'DATABASE_URL';
+  const line = `${v}=${d.database.url}`;
+  return env && !env.endsWith('\n') ? `${env}\n${line}` : `${env || ''}${line}`;
 }

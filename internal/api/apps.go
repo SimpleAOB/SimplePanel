@@ -35,6 +35,8 @@ func (s *Server) system(w http.ResponseWriter, r *http.Request, _ *store.User) {
 	out["dockerHealth"] = s.docker.Health()
 	pd, _ := s.store.Setting(r.Context(), "panel_domain")
 	out["panelDomain"] = pd
+	ip, _ := s.store.Setting(r.Context(), "server_ip")
+	out["serverIp"] = ip
 	out["httpsOnly"] = s.httpsOnly(r.Context())
 	out["viaHttps"] = viaProxyHTTPS(r)
 	writeJSON(w, 200, out)
@@ -202,6 +204,30 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.
 
 // ---- Apps ----
 
+// appStatus is the service's state as people should see it: "deploying"
+// while a deploy runs on a service that isn't up yet, and "deploy_failed"
+// when it never ran because its deploy failed.
+func (s *Server) appStatus(ctx context.Context, a *store.App) deploy.Status {
+	return s.withDeployState(ctx, a, s.deploy.Status(ctx, a))
+}
+
+// withDeployState turns "not deployed" into "deploying" or "deploy
+// failed" when the app's first deploy is running or failed.
+func (s *Server) withDeployState(ctx context.Context, a *store.App, st deploy.Status) deploy.Status {
+	if st.State != "not_deployed" {
+		return st
+	}
+	if ds, err := s.store.Deployments(ctx, a.ID, 1); err == nil && len(ds) > 0 {
+		switch ds[0].Status {
+		case "failed":
+			st.State = "deploy_failed"
+		case "queued", "running":
+			st.State = "deploying"
+		}
+	}
+	return st
+}
+
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
@@ -231,7 +257,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request, u *store.User)
 		if !secrets {
 			redactApp(&apps[i])
 		}
-		out[i] = row{App: apps[i], Status: statuses[apps[i].ID]}
+		out[i] = row{App: apps[i], Status: s.withDeployState(r.Context(), &apps[i], statuses[apps[i].ID])}
 	}
 	writeJSON(w, 200, out)
 }
@@ -290,7 +316,7 @@ func (in *appInput) apply(a *store.App) error {
 		}
 		a.Image = in.Image
 	case "git":
-		in.GitURL = strings.TrimSpace(in.GitURL)
+		in.GitURL = deploy.CleanGitURL(in.GitURL)
 		if err := deploy.ValidGitURL(in.GitURL); err != nil {
 			return err
 		}
@@ -623,13 +649,23 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 	out := map[string]any{
 		"app":         a,
 		"domains":     domains,
-		"status":      s.deploy.Status(r.Context(), a),
+		"status":      s.appStatus(r.Context(), a),
 		"serviceName": a.ServiceName(),
 		"level":       lvl,
 		"autoHost":    deploy.AutoHost(a, wd),
 		"wildcard":    wd != "" && !a.IsDatabase(),
 		"autoPort":    s.deploy.AutoPort(r.Context(), a),
 		"backupKind":  deploy.BackupKind(a),
+	}
+	if ds, err := s.store.Deployments(r.Context(), a.ID, 1); err == nil && len(ds) > 0 {
+		last := map[string]any{"id": ds[0].ID, "status": ds[0].Status, "createdAt": ds[0].CreatedAt}
+		if ds[0].Status == "failed" {
+			if d, err := s.store.Deployment(r.Context(), ds[0].ID); err == nil {
+				last["reason"] = deploy.FailureReason(d.Log)
+				last["tail"] = deploy.LogTail(d.Log, 8)
+			}
+		}
+		out["lastDeployment"] = last
 	}
 	if lvl >= store.LevelDeploy {
 		out["webhookPath"] = "/api/hooks/deploy/" + a.WebhookToken
@@ -938,17 +974,17 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	d.AppID = a.ID
-	d.Host = strings.TrimSpace(strings.ToLower(d.Host))
+	d.Host = deploy.CleanHost(d.Host)
 	if err := deploy.ValidHost(d.Host); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if d.Port == 0 {
-		d.Port = 80
-	}
-	if err := deploy.ValidPort(d.Port); err != nil {
-		writeErr(w, 400, err.Error())
-		return
+	// Port 0 is "automatic": the port the image listens on, else 80.
+	if d.Port != 0 {
+		if err := deploy.ValidPort(d.Port); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if pd, _ := s.store.Setting(r.Context(), "panel_domain"); pd == d.Host {
 		writeErr(w, 409, "that domain is used by the panel itself")
@@ -960,7 +996,7 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 	}
 	if err := s.store.CreateDomain(r.Context(), &d); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeErr(w, 409, "that domain is already in use")
+			writeErr(w, 409, s.domainOwner(r.Context(), d.Host, a.ID))
 			return
 		}
 		s.storeErr(w, err)
@@ -970,6 +1006,62 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 		s.log.Error("proxy sync", "err", err)
 	}
 	writeJSON(w, 201, d)
+}
+
+// domainOwner explains which app already uses a domain.
+func (s *Server) domainOwner(ctx context.Context, host string, appID int64) string {
+	routes, err := s.store.AllRoutes(ctx)
+	if err == nil {
+		for _, rt := range routes {
+			if rt.Host == host && rt.AppID == appID {
+				return "this app already has the domain " + host
+			}
+			if rt.Host == host {
+				if a, err := s.store.App(ctx, rt.AppID); err == nil {
+					return fmt.Sprintf("the app %s in project %s already uses %s. Remove it there first", a.Name, a.ProjectName, host)
+				}
+			}
+		}
+	}
+	return "another app already uses " + host + ". Remove it there first"
+}
+
+// updateDomain changes the app port a domain sends traffic to.
+func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request, u *store.User) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "bad id")
+		return
+	}
+	d, err := s.store.Domain(r.Context(), id)
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	if _, ok := s.loadAppID(w, r, u, d.AppID, store.LevelDeploy); !ok {
+		return
+	}
+	var in struct {
+		Port int `json:"port"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.Port != 0 {
+		if err := deploy.ValidPort(in.Port); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	if err := s.store.SetDomainPort(r.Context(), id, in.Port); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	if err := s.deploy.SyncProxy(r.Context()); err != nil {
+		s.log.Error("proxy sync", "err", err)
+	}
+	d.Port = in.Port
+	writeJSON(w, 200, d)
 }
 
 func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request, u *store.User) {

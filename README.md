@@ -44,7 +44,9 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 
 - **Deploy from Git**: any public or private (token) HTTPS repository. With
   a `Dockerfile` it is built as-is; without one it is served as a **static
-  site**. Pick a branch, a build path and a Dockerfile path in the advanced
+  site** (Vite, Astro, Create React App, Hugo and similar are detected and
+  built). Apps that run a server need a Dockerfile: see
+  [docs/DOCKERFILES.md](docs/DOCKERFILES.md) for examples. Pick a branch, a build path and a Dockerfile path in the advanced
   view.
 - **Static sites**: plain HTML repos work with no setup. For site generators
   (Vite, Astro, Hugo…) set a build command and output directory, e.g.
@@ -52,7 +54,9 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
   needed. Files are served by nginx with dotfiles hidden and no directory
   listings.
 - **Deploy a Docker image** from Docker Hub, GHCR, GitLab or any registry, public or private (saved registry logins, used by every node in the swarm).
-- **Domains with automatic HTTPS** via Let's Encrypt.
+- **Domains with automatic HTTPS** via Let's Encrypt. Traffic goes to the
+  port the app's image declares (`EXPOSE`) unless you pick one, and each
+  domain shows whether its DNS points at the server and HTTPS works.
 - **Databases**: PostgreSQL, MySQL, MariaDB, MongoDB and Redis with your own
   or generated credentials, a
   persistent volume and a copyable connection URL. Databases are only

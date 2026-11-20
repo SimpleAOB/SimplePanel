@@ -73,6 +73,7 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 
 func newEngine(t *testing.T) (*fakeEngine, *Manager, *store.Store) {
 	t.Helper()
+	stableFor = 0 // the fake engine's task never crashes
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

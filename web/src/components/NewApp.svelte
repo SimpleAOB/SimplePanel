@@ -1,17 +1,76 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { ui, data, go, loadApps, showDeployment } from '../lib/state.svelte.js';
-  import { emptyForm, payload } from '../lib/appform.js';
+  import { ui, data, go, loadApps, showDeployment, isAdmin } from '../lib/state.svelte.js';
+  import { emptyForm, payload, withDbUrl } from '../lib/appform.js';
   import { guardedPost } from '../lib/memory.svelte.js';
   import MemoryPicker from './MemoryPicker.svelte';
   import AppFields from './AppFields.svelte';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
 
-  let form = $state(emptyForm());
-  let domain = $state('');
-  let port = $state(80);
+  // A half-filled form survives a trip to another page (for example to
+  // connect GitHub), for this browser tab only.
+  // Databases already in this project, to insert their URLs.
+  let projectDbs = $derived(data.appsFor === ui.route.projectId ? data.apps.filter((x) => x.kind && x.kind !== 'app') : []);
+  let envErr = $state('');
+  async function insertDb(e) {
+    const id = Number(e.currentTarget.value);
+    e.currentTarget.value = '';
+    if (!id) return;
+    envErr = '';
+    try {
+      form.env = await withDbUrl(form.env, id);
+    } catch (err) {
+      envErr = err.message;
+    }
+  }
+
+  // With one database, connect it straight away; with more, let them pick.
+  async function connectDb() {
+    envOpen = true;
+    if (projectDbs.length !== 1) {
+      setTimeout(() => document.querySelector('select.insert')?.focus());
+      return;
+    }
+    try {
+      form.env = await withDbUrl(form.env, projectDbs[0].id);
+    } catch (err) {
+      envErr = err.message;
+    }
+  }
+
+  const draftKey = `sp-newapp-${ui.route.projectId}`;
+  function loadDraft() {
+    try {
+      return JSON.parse(sessionStorage.getItem(draftKey) || 'null');
+    } catch {
+      return null;
+    }
+  }
+  const draft = loadDraft();
+  let form = $state({ ...emptyForm(), ...(draft?.form || {}), gitToken: '' });
+  let domain = $state(draft?.domain || '');
+  let port = $state(draft?.port || '');
+  let envOpen = $state(!!draft?.form?.env);
+  let wildcard = $state('');
+  let more = $state(false);
+  let appSlug = $derived((form.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
+  $effect(() => {
+    const snapshot = JSON.stringify({ form: { ...form, gitToken: '' }, domain, port });
+    try {
+      sessionStorage.setItem(draftKey, snapshot);
+    } catch {
+      /* storage unavailable */
+    }
+  });
+  function clearDraft() {
+    try {
+      sessionStorage.removeItem(draftKey);
+    } catch {
+      /* storage unavailable */
+    }
+  }
   let error = $state('');
   let busy = $state(false);
   let project = $derived(data.projects.find((p) => p.id === ui.route.projectId));
@@ -26,6 +85,13 @@
   let selected = $derived(engines.find((e) => e.key === engine));
   // Redis has only a password; older servers don't send customUser.
   let customUser = $derived(selected?.customUser ?? true);
+  const engineHints = {
+    postgres: 'Recommended for most apps',
+    mysql: 'For apps built for MySQL',
+    mariadb: 'A MySQL-compatible choice',
+    mongo: 'Document database',
+    redis: 'Cache, queues and sessions',
+  };
   const versionExample = {
     postgres: 'postgres:16-alpine',
     mysql: 'mysql:8.0',
@@ -44,12 +110,24 @@
     } catch {
       /* falls back to empty list */
     }
+    try {
+      wildcard = (await api.get('/system')).wildcardDomain || '';
+    } catch {
+      /* only used for a hint */
+    }
   });
+  let autoAddress = $derived(wildcard && form.name && project ? `${appSlug}-${project.name}.${wildcard}` : '');
+  // "PostgreSQL 17" from the image tag, for people who don't read tags.
+  function version(img) {
+    const tag = (img || '').split(':')[1] || '';
+    const m = tag.match(/^\d+(\.\d+)?/);
+    return m ? m[0] : '';
+  }
 
   async function submitDatabase() {
     const pid = ui.route.projectId;
     const r = await guardedPost(`/projects/${pid}/databases`, {
-      name: form.name.trim().toLowerCase(),
+      name: appSlug,
       engine,
       image: ui.advanced ? dbImage.trim() : '',
       user: customUser ? dbUser.trim() : '',
@@ -57,6 +135,7 @@
       memoryMb: Number(dbMemory) || 0,
     });
     await loadApps(pid);
+    clearDraft();
     showDeployment(r.deployment.id);
     go(`/p/${pid}/a/${r.app.id}`);
   }
@@ -71,15 +150,17 @@
         await submitDatabase();
         return;
       }
-      const app = await api.post(`/projects/${pid}/apps`, payload({ ...form, name: form.name.trim().toLowerCase() }));
+      // The port also sets the automatic subdomain's port.
+      const app = await api.post(`/projects/${pid}/apps`, { ...payload({ ...form, name: appSlug }), ...(Number(port) > 0 ? { httpPort: Number(port) } : {}) });
       if (domain.trim()) {
         try {
-          await api.post(`/apps/${app.id}/domains`, { host: domain.trim().toLowerCase(), port: Number(port) || 80, https: true });
+          await api.post(`/apps/${app.id}/domains`, { host: domain.trim().toLowerCase(), port: Number(port) || 0, https: true });
         } catch (err) {
           error = `App created, but the domain was not added: ${err.message}`;
         }
       }
       const dep = await guardedPost(`/apps/${app.id}/deploy`);
+      clearDraft();
       await loadApps(pid);
       showDeployment(dep.id);
       go(`/p/${pid}/a/${app.id}`);
@@ -101,7 +182,7 @@
     <span>{kind === 'database' ? 'Database name' : 'App name'}</span>
     <!-- svelte-ignore a11y_autofocus -->
     <input type="text" bind:value={form.name} placeholder={kind === 'database' ? 'my-db' : 'my-app'} required autofocus />
-    <small>Lowercase letters, numbers and hyphens.</small>
+    <small>{#if appSlug && appSlug !== form.name}Will be created as <strong>{appSlug}</strong>.{:else}Used in addresses, so it is kept to lowercase letters, numbers and hyphens.{/if}</small>
   </label>
 
   {#if kind === 'database'}
@@ -111,8 +192,8 @@
         {#each engines as e (e.key)}
           <label class="card engine" class:selected={engine === e.key}>
             <input type="radio" name="engine" value={e.key} bind:group={engine} />
-            <strong>{e.label}</strong>
-            <span class="faint mono">{e.image}</span>
+            <strong>{e.label} {version(e.image)}</strong>
+            {#if ui.advanced}<span class="faint mono">{e.image}</span>{:else}<span class="faint">{engineHints[e.key] || ''}</span>{/if}
           </label>
         {/each}
       </div>
@@ -134,7 +215,7 @@
       <label class="field">
         <span>Password <span class="opt">(optional)</span></span>
         <div class="pw">
-          <input type={showPw ? 'text' : 'password'} bind:value={dbPassword} placeholder="Leave empty to generate" autocomplete="new-password" maxlength="128" />
+          <input type={showPw ? 'text' : 'password'} bind:value={dbPassword} placeholder="Generated if empty" autocomplete="new-password" maxlength="128" />
           <button type="button" class="btn ghost icon small" aria-label={showPw ? 'Hide password' : 'Show password'} title={showPw ? 'Hide password' : 'Show password'} onclick={() => (showPw = !showPw)}><Icon name="eye" size={16} /></button>
         </div>
       </label>
@@ -156,7 +237,30 @@
       Data is stored in a persistent volume. The database is only reachable from apps in this project.
     </p>
   {:else}
-  <AppFields bind:value={form} />
+  <AppFields bind:value={form} bind:more />
+  {#if !ui.advanced}
+    <div>
+      <button type="button" class="linkish" onclick={() => (more = !more)}>{more ? 'Show fewer options' : 'Show more options'}</button>
+      {#if !more}<small class="faint">({form.source === 'git' ? (form.buildType === 'static' ? 'access token, build path, build command, ' : 'access token, build path, Dockerfile, ') : ''}replicas, limits, volumes, ports, command)</small>{/if}
+    </div>
+  {/if}
+
+  <div class="card domain">
+    <h3>Environment variables <span class="faint">(optional)</span></h3>
+    {#if envOpen}
+      <textarea bind:value={form.env} rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;SECRET_KEY=…"></textarea>
+      <small class="faint">One <code>KEY=value</code> per line, or paste a <code>.env</code> file. You can change them later in the Environment tab.</small>
+      {#if projectDbs.length}
+        <select class="insert" aria-label="Insert a database's connection URL" onchange={insertDb}>
+          <option value="">Insert a database URL…</option>
+          {#each projectDbs as x (x.id)}<option value={x.id}>{x.name}</option>{/each}
+        </select>
+      {/if}
+      {#if envErr}<p class="error">{envErr}</p>{/if}
+    {:else}
+      <div><button type="button" class="btn small" onclick={() => (envOpen = true)}>Add variables</button>{#if projectDbs.length}<button type="button" class="btn small" style="margin-left: var(--sp-space-2)" onclick={connectDb}>Connect a database</button>{/if} <small class="faint">Settings like API keys or a database URL that your app reads at start.</small></div>
+    {/if}
+  </div>
 
   <div class="card domain">
     <h3>Domain <span class="faint">(optional)</span></h3>
@@ -167,10 +271,23 @@
       </label>
       <label class="field port">
         <span>App port</span>
-        <input type="number" min="1" max="65535" bind:value={port} />
+        <input type="number" min="0" max="65535" bind:value={port} placeholder="auto" />
       </label>
     </div>
-    <small class="faint">Point the domain's DNS at this server. HTTPS certificates are issued automatically.</small>
+    <small class="faint">
+      Add an A record for the domain pointing at this server first. HTTPS certificates are issued automatically.
+      Leave the port empty and SimplePanel uses the port the app's image says it listens on (or 80).
+    </small>
+    {#if !domain.trim()}
+      {#if autoAddress}
+        <small class="hint">Without a domain, the app gets <strong>{autoAddress}</strong>.</small>
+      {:else}
+        <small class="hint">
+          Without a domain, the app is only reachable by other apps in this project.
+          {#if isAdmin()}<a href="#/settings">Set up automatic subdomains</a> to give every app an address, even without a domain of your own.{/if}
+        </small>
+      {/if}
+    {/if}
   </div>
   {/if}
 
@@ -253,5 +370,9 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--sp-space-2);
+  }
+  .insert {
+    width: auto;
+    max-width: 260px;
   }
 </style>

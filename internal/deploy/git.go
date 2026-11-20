@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -122,7 +123,8 @@ func gitClone(ctx context.Context, o cloneOpts, dst, home string, w io.Writer) (
 			)
 		}
 	}
-	cmd.Stdout, cmd.Stderr = w, w
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = w, io.MultiWriter(w, &out)
 	err := cmd.Run()
 	kh := ""
 	if khFile != "" {
@@ -131,13 +133,33 @@ func gitClone(ctx context.Context, o cloneOpts, dst, home string, w io.Writer) (
 		}
 	}
 	if err != nil {
-		hint := "check the URL, branch and access token"
-		if khFile != "" {
-			hint = "check the URL and branch, and that the deploy key is added to the repository"
-		}
-		return kh, fmt.Errorf("git clone failed (%s): %w", hint, err)
+		return kh, cloneError(out.String(), o, khFile != "", err)
 	}
 	return kh, nil
+}
+
+// cloneError turns git's output into a reason a person can act on.
+func cloneError(out string, o cloneOpts, ssh bool, err error) error {
+	low := strings.ToLower(out)
+	switch {
+	case strings.Contains(low, "remote branch") && strings.Contains(low, "not found"):
+		return fmt.Errorf("git clone failed: the branch %q doesn't exist in the repository; check the branch name in the app's settings", o.Branch)
+	case ssh && (strings.Contains(low, "permission denied") || strings.Contains(low, "could not read from remote")):
+		return fmt.Errorf("git clone failed: the repository refused the deploy key; check that it is added to the repository and that the URL is right")
+	case strings.Contains(low, "could not read username"), strings.Contains(low, "authentication failed"),
+		strings.Contains(low, "repository not found"), strings.Contains(low, "returned error: 403"), strings.Contains(low, "returned error: 401"):
+		if o.Token != "" {
+			return fmt.Errorf("git clone failed: the repository wasn't found, or the access token can't read it; check the URL and the token")
+		}
+		return fmt.Errorf("git clone failed: the repository is private or the URL is wrong. For a private repository, connect GitHub or GitLab under Settings › Git, or add an access token in the app's settings")
+	case strings.Contains(low, "could not resolve host"):
+		return fmt.Errorf("git clone failed: the server couldn't look up the repository's host name; check the URL")
+	}
+	hint := "check the URL, branch and access token"
+	if ssh {
+		hint = "check the URL and branch, and that the deploy key is added to the repository"
+	}
+	return fmt.Errorf("git clone failed (%s): %w", hint, err)
 }
 
 // DeployKeyURL is where to add a deploy key for a GitHub or GitLab

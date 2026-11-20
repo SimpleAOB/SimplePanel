@@ -365,6 +365,9 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL
 	);
 	ALTER TABLE apps ADD COLUMN registry_id INTEGER REFERENCES registries(id) ON DELETE SET NULL;`,
+	// v10: the port the app's image says it listens on (EXPOSE), found at
+	// deploy time. Domains with port 0 route to it.
+	`ALTER TABLE apps ADD COLUMN image_port INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate() error {
@@ -609,6 +612,34 @@ type App struct {
 	// RegistryID is the saved registry login used to pull a private image
 	// (0: none).
 	RegistryID int64 `json:"registryId"`
+
+	// ImagePort is the port the deployed image declares with EXPOSE (0:
+	// unknown or none). Domains with port 0 ("automatic") route to it.
+	ImagePort int `json:"imagePort"`
+}
+
+// RoutePort is the port a domain with the given port setting routes to:
+// the port itself, or for 0 ("automatic") the image's port, else 80.
+func (a *App) RoutePort(port int) int {
+	if port > 0 {
+		return port
+	}
+	if a.ImagePort > 0 {
+		return a.ImagePort
+	}
+	return 80
+}
+
+// SetStaticBuild saves detected static site build settings.
+func (s *Store) SetStaticBuild(ctx context.Context, appID int64, command, outputDir, image string, spa bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET build_command=?,output_dir=?,build_image=?,spa=? WHERE id=?`, command, outputDir, image, spa, appID)
+	return err
+}
+
+// SetImagePort records the port an app's image declares.
+func (s *Store) SetImagePort(ctx context.Context, appID int64, port int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET image_port=? WHERE id=?`, port, appID)
+	return err
 }
 
 // IsPreview reports whether the app is a pull request preview.
@@ -626,7 +657,7 @@ const appCols = `a.id,a.project_id,p.name,a.name,a.kind,a.source,a.image,a.git_u
 	a.webhook_token,a.created_at,a.updated_at,a.build_type,a.build_image,a.build_command,a.output_dir,a.spa,
 	a.auto_domain,a.http_port,COALESCE(a.git_provider_id,0),a.git_repo,a.auto_deploy,a.previews,a.preview_env,
 	COALESCE(a.parent_app_id,0),a.pr_number,a.pr_title,a.pr_url,a.pr_comment_id,a.deploy_key,a.deploy_key_pub,a.ssh_known_hosts,
-	COALESCE(a.registry_id,0)`
+	COALESCE(a.registry_id,0),a.image_port`
 
 type scanner interface{ Scan(...any) error }
 
@@ -638,7 +669,7 @@ func scanApp(r scanner) (*App, error) {
 		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt,
 		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA, &a.AutoDomain, &a.HTTPPort,
 		&a.GitProviderID, &a.GitRepo, &a.AutoDeploy, &a.Previews, &a.PreviewEnv,
-		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts, &a.RegistryID)
+		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts, &a.RegistryID, &a.ImagePort)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -832,7 +863,7 @@ func (s *Store) Domains(ctx context.Context, appID int64) ([]Domain, error) {
 }
 
 func (s *Store) AllRoutes(ctx context.Context) ([]DomainRoute, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.app_id,d.host,d.port,d.https,p.name||'_'||a.name
+	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.app_id,d.host,CASE WHEN d.port>0 THEN d.port WHEN a.image_port>0 THEN a.image_port ELSE 80 END,d.https,p.name||'_'||a.name
 		FROM domains d JOIN apps a ON a.id=d.app_id JOIN projects p ON p.id=a.project_id ORDER BY d.id`)
 	if err != nil {
 		return nil, err
@@ -863,6 +894,12 @@ func (s *Store) Domain(ctx context.Context, id int64) (*Domain, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT id,app_id,host,port,https FROM domains WHERE id=?`, id).
 		Scan(&d.ID, &d.AppID, &d.Host, &d.Port, &d.HTTPS)
 	return &d, mapErr(err)
+}
+
+// SetDomainPort changes the app port a domain routes to (0: automatic).
+func (s *Store) SetDomainPort(ctx context.Context, id int64, port int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE domains SET port=? WHERE id=?`, port, id)
+	return err
 }
 
 func (s *Store) DeleteDomain(ctx context.Context, id int64) error {

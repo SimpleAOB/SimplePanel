@@ -138,6 +138,42 @@ func CleanRelPath(s string) (string, error) {
 }
 
 // ValidHost checks a domain name (no IPs, no wildcards, no ports).
+// CleanGitURL adds the https:// people leave out when they paste
+// "github.com/user/repo", and turns http:// into https://.
+func CleanGitURL(s string) string {
+	s = strings.TrimSpace(s)
+	switch {
+	case s == "", IsSSHURL(s), strings.Contains(s, "://"):
+		if strings.HasPrefix(s, "http://") {
+			return "https://" + strings.TrimPrefix(s, "http://")
+		}
+		return s
+	}
+	if host, rest, ok := strings.Cut(s, "/"); ok && strings.Contains(host, ".") && rest != "" {
+		return "https://" + s
+	}
+	return s
+}
+
+// CleanHost turns what people paste into a domain field into a bare host
+// name: "https://WWW.Example.com/path" becomes "www.example.com".
+func CleanHost(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	if h, p, ok := strings.Cut(s, ":"); ok && p != "" && strings.Trim(p, "0123456789") == "" {
+		s = h
+	}
+	return strings.TrimSuffix(s, ".")
+}
+
 func ValidHost(s string) error {
 	if len(s) > 253 || net.ParseIP(s) != nil {
 		return errors.New("enter a domain name like app.example.com")
@@ -148,7 +184,7 @@ func ValidHost(s string) error {
 	}
 	for _, l := range labels {
 		if !labelRe.MatchString(l) {
-			return errors.New("enter a domain name like app.example.com (lowercase)")
+			return errors.New("enter a domain name like app.example.com: letters, numbers, hyphens and dots only")
 		}
 	}
 	return nil
@@ -171,14 +207,56 @@ func ParseEnv(s string) ([]string, error) {
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
-		k, _, ok := strings.Cut(line, "=")
-		k = strings.TrimSpace(k)
-		if !ok || !envKeyRe.MatchString(k) {
-			return nil, fmt.Errorf("env line %d: expected KEY=value", i+1)
+		// Lines copied from a shell script or .env file may start with
+		// "export ".
+		if rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), "export "); ok {
+			line = rest
 		}
-		out = append(out, k+"="+strings.SplitN(line, "=", 2)[1])
+		k, v, ok := strings.Cut(line, "=")
+		k = strings.TrimSpace(k)
+		if !ok {
+			return nil, fmt.Errorf("env line %d: expected KEY=value, but there is no =", i+1)
+		}
+		if !envKeyRe.MatchString(k) {
+			return nil, fmt.Errorf("env line %d: %q isn't a valid name. Use letters, digits and underscores, with no spaces", i+1, k)
+		}
+		out = append(out, k+"="+unquoteEnv(v))
 	}
 	return out, nil
+}
+
+// unquoteEnv removes one pair of matching outer quotes, as .env files
+// write values with spaces: "a b" or 'a b'. Inside double quotes, \" \\
+// and \n are unescaped. Anything else is kept exactly as typed.
+func unquoteEnv(v string) string {
+	t := strings.TrimSpace(v)
+	if len(t) < 2 {
+		return v
+	}
+	switch {
+	case t[0] == '\'' && t[len(t)-1] == '\'':
+		return t[1 : len(t)-1]
+	case t[0] == '"' && t[len(t)-1] == '"':
+		inner := t[1 : len(t)-1]
+		var b strings.Builder
+		for i := 0; i < len(inner); i++ {
+			if inner[i] == '\\' && i+1 < len(inner) {
+				switch inner[i+1] {
+				case 'n':
+					b.WriteByte('\n')
+					i++
+					continue
+				case '"', '\\':
+					b.WriteByte(inner[i+1])
+					i++
+					continue
+				}
+			}
+			b.WriteByte(inner[i])
+		}
+		return b.String()
+	}
+	return v
 }
 
 // ValidVolumePath checks a container mount path.

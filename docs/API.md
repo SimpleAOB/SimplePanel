@@ -57,6 +57,8 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Automatic updates | `PUT /api/update/settings {"auto":true,"hour":3}` (`hour` is server time, `-1` for any time) |
 | Registry logins (private images) | `GET /api/registries`; admins: `POST /api/registries {"name","server","username","password"}` (signs in first; add `"skipCheck":true` to skip), `PUT`/`DELETE /api/registries/{id}`, `POST /api/registries/test` |
 | Pick a service's registry login | `PUT /api/apps/{id}` with `"registryId": N` (`0` for none; leave it out to use the only saved login for the image's registry) |
+| Domains | `POST /api/apps/{id}/domains {"host","port","https"}` (`port` 0 or left out: the port the image EXPOSEs, else 80), `PUT /api/domains/{id} {"port"}`, `DELETE /api/domains/{id}` |
+| Check a domain's DNS and HTTPS | `GET /api/dns/check?host=app.example.com` (add `&https=0` to skip HTTPS). `dns` is `ok`, `missing`, `elsewhere`, `unreachable` or `proxied`; `https` is `ok`, `pending` or `error` |
 | Server memory and limits | `GET /api/capacity` (`?app=ID` also returns what the other services are allowed); admins: `PUT /api/capacity/settings {"reserveMb":0,"noAutoLimits":false}` |
 | Memory limit of a service | `"memoryMb"` in `PUT /api/apps/{id}`: `0` automatic (sized to the server), `-1` no limit, or MB (at least 16) |
 | Is Docker answering | `GET /api/docker` (never waits on Docker: `{"ok":false,"since":…,"error":…}` while it isn't) |

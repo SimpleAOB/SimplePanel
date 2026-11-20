@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '../../lib/api.js';
   import Updates from './Updates.svelte';
+  import DomainStatus from '../DomainStatus.svelte';
 
   let panelDomain = $state('');
   let wildcard = $state('');
@@ -10,6 +11,8 @@
   let wmsg = $state('');
   let werr = $state('');
   let ip = $state('');
+  let savedPanel = $state('');
+  let savedWildcard = $state('');
   let savedDomain = $state('');
   let httpsOnly = $state(false);
   let viaHttps = $state(false);
@@ -23,7 +26,22 @@
     httpsOnly = !!s.httpsOnly;
     viaHttps = !!s.viaHttps;
     wildcard = s.wildcardDomain || '';
-    ip = location.hostname;
+    savedPanel = panelDomain;
+    savedWildcard = wildcard;
+    // Only an IP address is useful here; a hostname or localhost isn't.
+    const h = location.hostname;
+    ip = s.serverIp || (/^[\d.]+$|:/.test(h) && h !== '127.0.0.1' ? h : '');
+  });
+
+  // A public IPv4 address can use sslip.io, a free DNS service where
+  // anything.1-2-3-4.sslip.io points at 1.2.3.4, so apps get a working
+  // HTTPS address before the person owns a domain.
+  let sslip = $derived.by(() => {
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip);
+    if (!m) return '';
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b < 32) || (a === 100 && b >= 64 && b < 128)) return '';
+    return `${m.slice(1).join('-')}.sslip.io`;
   });
 
   async function saveDomain(e) {
@@ -31,6 +49,7 @@
     msg = err = '';
     try {
       const r = await api.put('/settings', { panelDomain });
+      savedPanel = panelDomain;
       savedDomain = panelDomain;
       if (r.httpsOnly === false) httpsOnly = false;
       msg = panelDomain
@@ -58,6 +77,7 @@
     try {
       const r = await api.put('/settings', { wildcardDomain: wildcard });
       wildcard = r.wildcardDomain ?? wildcard;
+      savedWildcard = wildcard;
       wmsg = wildcard
         ? `Saved. Apps now get addresses like web-shop.${wildcard}.`
         : 'Saved. Automatic subdomains are off.';
@@ -79,6 +99,7 @@
     </label>
     <button class="btn primary">Save</button>
   </div>
+  {#if savedPanel}{#key savedPanel}<DomainStatus host={savedPanel} serverIp={ip} />{/key}{/if}
   {#if msg}<p class="ok">{msg}</p>{/if}
   {#if err}<p class="error">{err}</p>{/if}
   {#if savedDomain}
@@ -120,6 +141,13 @@
     Add a DNS record <code>*.{wildcard || 'apps.example.com'}</code> of type A pointing at this server{ip ? ` (${ip})` : ''}.
     Certificates are issued for each subdomain the first time it's used. Leave empty to turn this off.
   </small>
+  {#if sslip && !savedWildcard}
+    <p class="muted">
+      No domain yet? <button type="button" class="linkish" onclick={() => (wildcard = sslip)}>Use {sslip}</button>, a free service that
+      points every name under it at this server, so you can open your apps right away. Click Save after. You can switch to your own domain later.
+    </p>
+  {/if}
+  {#if savedWildcard}{#key savedWildcard}<DomainStatus host={'check.' + savedWildcard} https={false} serverIp={ip} />{/key}{/if}
   {#if wmsg}<p class="ok">{wmsg}</p>{/if}
   {#if werr}<p class="error">{werr}</p>{/if}
 </form>

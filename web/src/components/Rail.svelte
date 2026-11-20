@@ -7,12 +7,14 @@
   let adding = $state(false);
   let name = $state('');
   let error = $state('');
+  // "My Shop!" becomes "my-shop": names are used in addresses.
+  let slug = $derived(name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
 
   async function create(e) {
     e.preventDefault();
     error = '';
     try {
-      const p = await api.post('/projects', { name: name.trim().toLowerCase() });
+      const p = await api.post('/projects', { name: slug });
       await loadProjects();
       adding = false;
       name = '';
@@ -66,7 +68,7 @@
         <span>Name</span>
         <!-- svelte-ignore a11y_autofocus -->
         <input type="text" bind:value={name} placeholder="my-project" autofocus required />
-        <small>Lowercase letters, numbers and hyphens.</small>
+        <small>{#if slug && slug !== name}Will be created as <strong>{slug}</strong>.{:else}Used in app addresses, so it is kept to lowercase letters, numbers and hyphens.{/if}</small>
       </label>
       {#if error}<p class="error">{error}</p>{/if}
       <div class="actions">

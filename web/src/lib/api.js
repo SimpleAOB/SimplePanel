@@ -3,7 +3,8 @@
 
 export class ApiError extends Error {
   constructor(status, message, data = null) {
-    super(message);
+    // Server errors are sentence fragments; show them as sentences.
+    super(typeof message === 'string' && message ? message[0].toUpperCase() + message.slice(1) : message);
     this.status = status;
     this.data = data; // the whole error body, e.g. { code: 'memory_pressure' }
   }
@@ -39,5 +40,6 @@ export const api = {
   get: (p) => request('GET', p),
   post: (p, b) => request('POST', p, b ?? {}),
   put: (p, b) => request('PUT', p, b),
+  patch: (p, b) => request('PATCH', p, b),
   del: (p) => request('DELETE', p),
 };

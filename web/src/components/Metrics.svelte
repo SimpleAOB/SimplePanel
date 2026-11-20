@@ -71,10 +71,12 @@
         </span>
       </div>
       {#if server && last.diskTotal}
-        <div class="tile">
+        {@const used = (last.disk / last.diskTotal) * 100}
+        <div class="tile" class:warnt={used >= 80 && used < 90} class:badt={used >= 90}>
           <span class="label">Disk</span>
-          <span class="value">{pct((last.disk / last.diskTotal) * 100)}</span>
+          <span class="value">{pct(used)}</span>
           <span class="faint small">{bytes(last.disk)} of {bytes(last.diskTotal)}</span>
+          {#if used >= 80}<span class="small note">{used >= 90 ? 'Almost full: deploys and databases fail when the disk fills up.' : 'Getting full.'} Old images and build cache are usually the cause (<code>docker system prune</code>).</span>{/if}
         </div>
       {/if}
       <div class="tile">
@@ -169,5 +171,14 @@
     .charts {
       grid-template-columns: minmax(0, 1fr);
     }
+  }
+  .tile.warnt .value {
+    color: var(--sp-warning);
+  }
+  .tile.badt .value {
+    color: var(--sp-danger);
+  }
+  .tile .note {
+    color: var(--sp-text-muted);
   }
 </style>

@@ -213,7 +213,10 @@ textarea:focus {
 }
 .dot.running, .dot.succeeded { background: var(--sp-success); }
 .dot.starting, .dot.running-deploy, .dot.queued { background: var(--sp-warning); }
-.dot.failing, .dot.failed { background: var(--sp-danger); }
+.dot.failing, .dot.failed, .dot.deploy_failed { background: var(--sp-danger); }
+.dot.deploying { background: var(--sp-accent); animation: sp-pulse 1.2s ease-in-out infinite; }
+@keyframes sp-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot.deploying { animation: none; } }
 
 /* A button that reads as an inline link. */
 .linkish {

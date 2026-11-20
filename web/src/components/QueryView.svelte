@@ -1,4 +1,5 @@
 <script>
+  import { copyText } from '../lib/clipboard.js';
   // The database Query tab: a read-only table browser and query box.
   // Queries run on the server as a read-only database user; see
   // internal/deploy/dbquery.go.
@@ -325,7 +326,7 @@
   }
   async function copyAs(kind) {
     try {
-      await navigator.clipboard.writeText(kind === 'csv' ? csv() : JSON.stringify(objects(), null, 2));
+      await copyText(kind === 'csv' ? csv() : JSON.stringify(objects(), null, 2));
       copied = kind;
       setTimeout(() => (copied = ''), 1200);
     } catch {

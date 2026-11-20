@@ -21,6 +21,9 @@ type Route struct {
 	Service string // Swarm service name, resolvable on the overlay network
 	Port    int
 	HTTPS   bool
+	// Path, when set instead of Host, routes that path prefix on every
+	// host (plain HTTP only), ahead of all host routes.
+	Path string
 }
 
 const (
@@ -38,6 +41,7 @@ type router struct {
 	Service     string   `yaml:"service"`
 	Middlewares []string `yaml:"middlewares,omitempty"`
 	TLS         *tlsCfg  `yaml:"tls,omitempty"`
+	Priority    int      `yaml:"priority,omitempty"`
 }
 
 type tlsCfg struct {
@@ -64,6 +68,12 @@ func Render(routes []Route) ([]byte, error) {
 		var s service
 		s.LoadBalancer.Servers = []server{{URL: fmt.Sprintf("http://%s:%d", r.Service, r.Port)}}
 		services[svcName] = s
+		if r.Path != "" {
+			routers["sp-"+r.Key+"-http"] = router{
+				Rule: fmt.Sprintf("PathPrefix(`%s`)", r.Path), EntryPoints: []string{entryHTTP}, Service: svcName, Priority: 1 << 20,
+			}
+			continue
+		}
 		rule := fmt.Sprintf("Host(`%s`)", r.Host)
 		if r.HTTPS {
 			routers["sp-"+r.Key+"-https"] = router{

@@ -8,6 +8,7 @@
   import { bytes, dateTime, schedulePresets, describeSchedule } from '../lib/format.js';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import DestinationDialog from './DestinationDialog.svelte';
 
   let { panel = false, appId = 0, appName = '', isDb = false, engine = '', level = 3 } = $props();
 
@@ -29,6 +30,7 @@
   let scanDest = $state(0);
   let remote = $state(null);
   let scanErr = $state('');
+  let addingDest = $state(false);
 
   async function load() {
     try {
@@ -181,14 +183,18 @@
     <section class="card">
       <h3>Backups</h3>
       <p class="muted">
-        Backups go to S3-compatible storage such as AWS S3, Cloudflare R2, Backblaze B2 or MinIO.
+        Backups are stored outside this server, on S3-compatible storage such as Cloudflare R2, Backblaze B2, AWS S3 or MinIO.
         {#if isAdmin()}
-          Add a destination in <a href="#/settings/backups">Settings › Backups</a> first.
+          {#if panel}Add a destination above first.{:else}Add a destination once, and every database and app can use it.{/if}
         {:else}
           Ask an admin to add a backup destination first.
         {/if}
       </p>
+      {#if isAdmin() && !panel}<div><button class="btn primary" onclick={() => (addingDest = true)}><Icon name="plus" size={14} /> Add a destination</button></div>{/if}
     </section>
+    {#if addingDest}
+      <DestinationDialog onclose={() => (addingDest = false)} onsaved={async () => { addingDest = false; await load(); }} />
+    {/if}
   {:else}
     <section class="card">
       <div class="row between">
@@ -503,6 +509,12 @@
   .grow {
     flex: 1;
     min-width: 0;
+  }
+  @media (max-width: 560px) {
+    /* On a phone the buttons wrap below instead of squeezing the date. */
+    .grow {
+      flex-basis: 100%;
+    }
   }
   .link {
     display: flex;

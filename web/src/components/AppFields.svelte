@@ -2,7 +2,7 @@
   // Source + runtime fields for an app. `value` is a plain object bound
   // by the parent. Advanced fields only show when Advanced view is on.
   import { onMount } from 'svelte';
-  import { ui, setAdvanced, isAdmin } from '../lib/state.svelte.js';
+  import { ui, isAdmin } from '../lib/state.svelte.js';
   import { applyStaticPreset } from '../lib/staticpresets.js';
   import { loadRegistries, registryHost } from '../lib/registries.js';
   import Icon from './Icon.svelte';
@@ -10,7 +10,10 @@
   import RepoPicker from './RepoPicker.svelte';
   import MemoryPicker from './MemoryPicker.svelte';
 
-  let { value = $bindable(), hasToken = false, showRuntime = true, database = false, kind = 'app', appId = 0 } = $props();
+  // more: show this form's advanced fields without turning on Advanced
+  // view everywhere.
+  let { value = $bindable(), hasToken = false, showRuntime = true, database = false, kind = 'app', appId = 0, more = $bindable(false) } = $props();
+  let adv = $derived(ui.advanced || more);
 
   let helpOpen = $state(false);
 
@@ -39,10 +42,11 @@
   });
   let imageTyped = $derived(/[/:]/.test(value.image || '') || (value.image || '').length > 3);
 
+  let showStatic = $state(false);
   // Fill the build fields from a preset, and show them so the user can check.
   function usePreset(preset) {
     applyStaticPreset(value, preset);
-    setAdvanced(true);
+    showStatic = true;
     helpOpen = false;
   }
 
@@ -94,6 +98,12 @@
     {/if}
   {:else}
     <RepoPicker bind:value />
+    {#if !value.gitProviderId}
+      <label class="field">
+        <span>Branch <span class="opt">(optional)</span></span>
+        <input type="text" bind:value={value.gitBranch} placeholder="The repository's default branch" spellcheck="false" />
+      </label>
+    {/if}
     <div class="field">
       <div class="label-row">
         <span>Build</span>
@@ -110,22 +120,18 @@
       </div>
       <small>
         {#if value.buildType === 'auto'}
-          Uses the repository's Dockerfile if it has one, otherwise serves it as a static site.
+          Uses the repository's Dockerfile if it has one. Without one, site generators like Vite or Hugo are built for you and plain files are served as a website. Apps that run a server need a Dockerfile.
         {:else if value.buildType === 'dockerfile'}
           Builds the Dockerfile in the repository.
         {:else}
           Serves HTML, CSS and JS files with a small nginx server on port 80.
-          {#if !ui.advanced}Using Vite, Astro, Hugo or similar? <button type="button" class="inline-link" onclick={() => (helpOpen = true)}>Pick your tool</button> to add a build step.{/if}
+          {#if !adv}Using Vite, Astro, Hugo or similar? <button type="button" class="inline-link" onclick={() => (helpOpen = true)}>Pick your tool</button> to add a build step.{/if}
         {/if}
       </small>
     </div>
-    {#if ui.advanced}
+    {#if adv}
       {#if !value.gitProviderId}
       <div class="row">
-        <label class="field">
-          <span>Branch</span>
-          <input type="text" bind:value={value.gitBranch} placeholder="default branch" />
-        </label>
         <label class="field">
           <span>Access token</span>
           <input type="password" bind:value={value.gitToken} autocomplete="off" placeholder={hasToken ? 'saved (leave blank to keep)' : 'for private repositories'} />
@@ -147,35 +153,35 @@
           </label>
         {/if}
       </div>
-      {#if value.buildType !== 'dockerfile'}
-        <div class="static card">
-          <h3 class="sub-title">Static site build {#if value.buildType === 'auto'}<span class="faint">(used when there's no Dockerfile)</span>{/if}</h3>
-          <div class="row">
-            <label class="field">
-              <span>Build command</span>
-              <input type="text" bind:value={value.buildCommand} placeholder="none: serve files as they are" class="mono" />
-            </label>
-            <label class="field">
-              <span>Output directory</span>
-              <input type="text" bind:value={value.outputDir} placeholder={value.buildCommand ? 'e.g. dist' : '/ (build path)'} />
-            </label>
-          </div>
+    {/if}
+    {#if value.buildType !== 'dockerfile' && (adv || showStatic || (value.buildType === 'static' && (value.buildCommand || value.outputDir)))}
+      <div class="static card">
+        <h3 class="sub-title">Static site build {#if value.buildType === 'auto'}<span class="faint">(used when there's no Dockerfile)</span>{/if}</h3>
+        <div class="row">
           <label class="field">
-            <span>Build image</span>
-            <input type="text" bind:value={value.buildImage} placeholder="node:22-alpine" />
-            <small>Runs the build command. Node dependencies install automatically. For Hugo use e.g. hugomods/hugo:exts with <code>hugo --minify</code> and output <code>public</code>.</small>
+            <span>Build command</span>
+            <input type="text" bind:value={value.buildCommand} placeholder="none: serve files as they are" class="mono" />
           </label>
-          <label class="check"><input type="checkbox" bind:checked={value.spa} /> Single-page app: send unknown paths to index.html</label>
+          <label class="field">
+            <span>Output directory</span>
+            <input type="text" bind:value={value.outputDir} placeholder={value.buildCommand ? 'e.g. dist' : '/ (build path)'} />
+          </label>
         </div>
-      {/if}
+        <label class="field">
+          <span>Build image</span>
+          <input type="text" bind:value={value.buildImage} placeholder="node:22-alpine" />
+          <small>Runs the build command. Node dependencies install automatically. For Hugo use e.g. hugomods/hugo:exts with <code>hugo --minify</code> and output <code>public</code>.</small>
+        </label>
+        <label class="check"><input type="checkbox" bind:checked={value.spa} /> Single-page app: send unknown paths to index.html</label>
+      </div>
     {/if}
   {/if}
 
-  {#if showRuntime && !ui.advanced}
+  {#if showRuntime && !adv}
     <h3 class="sub">Resources</h3>
     <MemoryPicker bind:value={value.memoryMb} {kind} {appId} replicas={database ? 1 : value.replicas} />
   {/if}
-  {#if showRuntime && ui.advanced}
+  {#if showRuntime && adv}
     <h3 class="sub">Runtime</h3>
     <div class="row">
       {#if !database}
@@ -300,6 +306,12 @@
     align-items: center;
     font-size: var(--sp-text-sm);
     color: var(--sp-text-muted);
+  }
+  .opt {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
+    color: var(--sp-text-faint);
   }
   .with-icon {
     display: inline-flex;
