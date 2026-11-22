@@ -1,4 +1,5 @@
 <script>
+  import ImageEnv from './ImageEnv.svelte';
   import { copyText } from '../lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
@@ -745,6 +746,9 @@
       <form class="card" onsubmit={saveEnv}>
         <h3>Environment variables</h3>
         <p class="muted">One <code>KEY=value</code> per line, or paste a whole <code>.env</code> file. Lines starting with # are ignored. Changes apply when the app deploys.</p>
+        {#if detail.app.source === 'image'}
+          <ImageEnv image={detail.app.image} registryId={detail.app.registryId || 0} projectId={pid} bind:env />
+        {/if}
         <textarea bind:value={env} rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;NODE_ENV=production"></textarea>
         <div class="row between envbar">
           {#if dbs.length}
