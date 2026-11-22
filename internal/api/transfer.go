@@ -203,6 +203,10 @@ type importRequest struct {
 	Name string `json:"name"`
 	// Deploy starts a deployment for each imported service.
 	Deploy bool `json:"deploy"`
+	// ReplaceData deletes data that deleted services with the same names
+	// left behind, and KeepData uses it (see leftoverGuard).
+	ReplaceData bool `json:"replaceData"`
+	KeepData    bool `json:"keepData"`
 }
 
 type importResult struct {
@@ -417,6 +421,15 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, u *store.
 				return
 			}
 		}
+	}
+
+	planned := make([]*store.App, 0, len(plans))
+	for _, ps := range plans {
+		planned = append(planned, ps.app)
+	}
+	canReplace := u.IsAdmin() || (project != nil && s.level(ctx, u, project.ID) >= store.LevelManage)
+	if !req.KeepData && !s.leftoverGuard(w, r, planned, req.ReplaceData, canReplace, "") {
+		return
 	}
 
 	// 2. Create.

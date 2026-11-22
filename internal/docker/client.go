@@ -369,6 +369,15 @@ func (c *Client) NetworkRemove(ctx context.Context, name string) error {
 	return err
 }
 
+// VolumeExists reports whether a named volume exists.
+func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
+	err := c.doJSON(ctx, http.MethodGet, "/volumes/"+url.PathEscape(name), nil, nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // VolumeRemove deletes a named volume; a missing volume is not an error.
 func (c *Client) VolumeRemove(ctx context.Context, name string) error {
 	err := c.doJSON(ctx, http.MethodDelete, "/volumes/"+url.PathEscape(name), nil, nil, nil)

@@ -12,6 +12,7 @@
   import UpdateBanner from './UpdateBanner.svelte';
   import DockerBanner from './DockerBanner.svelte';
   import MemoryPrompt from './MemoryPrompt.svelte';
+  import LeftoverPrompt from './LeftoverPrompt.svelte';
   import UpdateDialog from './UpdateDialog.svelte';
   import { isAdmin } from '../lib/state.svelte.js';
   import { upd, loadUpdate, follow } from '../lib/update.svelte.js';
@@ -96,6 +97,7 @@
   {/if}
 </div>
 <MemoryPrompt />
+<LeftoverPrompt />
 {#if upd.open && (upd.status?.check?.latest || upd.progress)}
   <UpdateDialog />
 {/if}

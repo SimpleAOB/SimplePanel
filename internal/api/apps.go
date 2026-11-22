@@ -188,6 +188,12 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.
 			return
 		}
 	}
+	warnings := []string{}
+	if deleteData(r) {
+		for i := range apps {
+			warnings = append(warnings, s.removeData(r.Context(), &apps[i])...)
+		}
+	}
 	p, err := s.store.Project(r.Context(), id)
 	if err != nil {
 		s.storeErr(w, err)
@@ -199,7 +205,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request, u *store.
 	}
 	s.deploy.RemoveProjectNetwork(p.Name)
 	_ = s.deploy.SyncProxy(r.Context())
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "warnings": warnings})
 }
 
 // ---- Apps ----
@@ -286,8 +292,12 @@ type appInput struct {
 	Command       string         `json:"command"`
 	Volumes       []store.Volume `json:"volumes"`
 	Ports         []store.Port   `json:"ports"`
-	AutoDomain    *bool          `json:"autoDomain"`
-	HTTPPort      *int           `json:"httpPort"`
+	// ReplaceData deletes data that a deleted service left in volumes this
+	// app would use, and KeepData uses it as it is (see leftoverGuard).
+	ReplaceData bool  `json:"replaceData"`
+	KeepData    bool  `json:"keepData"`
+	AutoDomain  *bool `json:"autoDomain"`
+	HTTPPort    *int  `json:"httpPort"`
 
 	// Git integration; nil keeps the current value.
 	GitProviderID *int64  `json:"gitProviderId"`
@@ -498,6 +508,16 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request, u *store.User
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if len(a.Volumes) > 0 {
+		if _, err := s.store.AppByName(r.Context(), p.Name, a.Name); err == nil {
+			writeErr(w, 409, "an app with that name already exists in this project")
+			return
+		}
+		canReplace := s.level(r.Context(), u, p.ID) >= store.LevelManage
+		if !in.KeepData && !s.leftoverGuard(w, r, []*store.App{a}, in.ReplaceData, canReplace, "") {
+			return
+		}
+	}
 	if err := s.store.CreateApp(r.Context(), a); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeErr(w, 409, "an app with that name already exists in this project")
@@ -537,6 +557,10 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store
 		User     string `json:"user"`     // optional, generated if empty
 		Password string `json:"password"` // optional, generated if empty
 		MemoryMB int    `json:"memoryMb"` // 0 automatic, -1 no limit
+		// ReplaceData deletes the data a deleted database with the same
+		// name left behind, and KeepData uses it (see leftoverGuard).
+		ReplaceData bool `json:"replaceData"`
+		KeepData    bool `json:"keepData"`
 	}
 	if !readJSON(w, r, &in) {
 		return
@@ -568,6 +592,16 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request, u *store
 			return
 		}
 		a.Image = in.Image
+	}
+	// A live service with this name owns the volumes; only look for
+	// leftovers when the name is free.
+	if _, err := s.store.AppByName(r.Context(), p.Name, a.Name); err == nil {
+		writeErr(w, 409, "an app or database with that name already exists in this project")
+		return
+	}
+	canReplace := s.level(r.Context(), u, p.ID) >= store.LevelManage
+	if !in.KeepData && !s.leftoverGuard(w, r, []*store.App{a}, in.ReplaceData, canReplace, "") {
+		return
 	}
 	warn, ok := s.memoryGuard(w, r, u, a)
 	if !ok {
@@ -720,6 +754,10 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 		return
 	}
 	prevAuto, prevPort := a.AutoDomain, a.HTTPPort
+	hadVol := map[string]bool{}
+	for _, v := range a.Volumes {
+		hadVol[v.Name] = true
+	}
 	var in appInput
 	if !readJSON(w, r, &in) {
 		return
@@ -737,6 +775,21 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request, u *store.User
 	if err := s.resolveRegistry(r.Context(), a, in.RegistryID); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	// A newly added volume may already exist, left by a deleted service.
+	added := *a
+	added.Volumes = nil
+	for _, v := range a.Volumes {
+		if !hadVol[v.Name] {
+			added.Volumes = append(added.Volumes, v)
+		}
+	}
+	if len(added.Volumes) > 0 && !in.KeepData {
+		canReplace := s.level(r.Context(), u, a.ProjectID) >= store.LevelManage
+		if !s.leftoverGuard(w, r, []*store.App{&added}, in.ReplaceData, canReplace,
+			"A volume you added already holds old data on the server, left by a deleted service with this name or a volume this app used before. Delete the old data, use it as it is, or give the volume another name.") {
+			return
+		}
 	}
 	if err := s.store.UpdateApp(r.Context(), a); err != nil {
 		s.storeErr(w, err)
@@ -767,8 +820,30 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request, u *store.User
 		s.storeErr(w, err)
 		return
 	}
+	warnings := []string{}
+	if deleteData(r) && !a.IsPreview() { // previews' volumes are always removed
+		warnings = append(warnings, s.removeData(r.Context(), a)...)
+	}
 	_ = s.deploy.SyncProxy(r.Context())
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "warnings": warnings})
+}
+
+// deleteData reports whether a delete should also delete the stored data
+// (Docker volumes). The web UI asks for it by default; API calls without
+// ?deleteData=1 keep the data, as before.
+func deleteData(r *http.Request) bool { return r.URL.Query().Get("deleteData") == "1" }
+
+// removeData deletes a removed app's volumes. The app is already gone, so
+// a failure is a warning: the data stays and can be deleted later.
+func (s *Server) removeData(ctx context.Context, a *store.App) []string {
+	if len(a.Volumes) == 0 {
+		return nil
+	}
+	if err := s.deploy.RemoveData(ctx, a); err != nil {
+		s.log.Warn("deleting data", "app", a.ServiceName(), "err", err)
+		return []string{fmt.Sprintf("%s was deleted, but its data could not be: %v", a.Name, err)}
+	}
+	return nil
 }
 
 func (s *Server) deployApp(w http.ResponseWriter, r *http.Request, u *store.User) {

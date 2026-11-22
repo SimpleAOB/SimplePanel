@@ -1,6 +1,6 @@
 <script>
   // Paste (or load) an export to create a project or a service.
-  import { api } from '../lib/api.js';
+  import { withLeftoverCheck, post } from '../lib/leftover.svelte.js';
   import { go, loadProjects } from '../lib/state.svelte.js';
   import Modal from './Modal.svelte';
 
@@ -54,7 +54,7 @@
     warnings = [];
     busy = true;
     try {
-      const res = await api.post('/import', { document: text, projectId, name: name.trim(), deploy });
+      const res = await withLeftoverCheck(post, '/import', { document: text, projectId, name: name.trim(), deploy });
       await loadProjects();
       result = res;
       if (res.warnings.length) {

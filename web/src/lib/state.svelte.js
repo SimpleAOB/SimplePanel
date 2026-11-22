@@ -24,6 +24,8 @@ export const ui = $state({
   panelWidth: Number(load('sp-panel-width', '0')) || 0, // 0: the theme's default
   navOpen: false,
   route: parseHash(),
+  // A note to show on the next page, e.g. a delete's warnings.
+  flash: '',
 });
 
 export const data = $state({
