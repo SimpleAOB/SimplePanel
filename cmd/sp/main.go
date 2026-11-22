@@ -231,6 +231,7 @@ type appDetail struct {
 	AutoHost string `json:"autoHost"`
 	Domains  []struct {
 		Host  string `json:"host"`
+		Path  string `json:"path"`
 		HTTPS bool   `json:"https"`
 	} `json:"domains"`
 }
@@ -458,7 +459,7 @@ func run(args []string) error {
 			if dm.HTTPS {
 				scheme = "https"
 			}
-			fmt.Printf("  %s://%s\n", scheme, dm.Host)
+			fmt.Printf("  %s://%s%s\n", scheme, dm.Host, dm.Path)
 		}
 		return nil
 

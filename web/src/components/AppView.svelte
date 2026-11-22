@@ -29,7 +29,15 @@
   let form = $state(null);
   let env = $state('');
   let saved = $state('');
-  let newDomain = $state({ host: '', port: '', https: true });
+  let newDomain = $state({ host: '', port: '', https: true, stripPath: false });
+  // The path typed after the host ("app.example.com/api" gives "/api").
+  let newPath = $derived.by(() => {
+    let v = newDomain.host.trim().replace(/^[a-z]+:\/\//i, '').replace(/[?#].*$/, '');
+    const i = v.indexOf('/');
+    if (i < 0) return '';
+    const segs = v.slice(i).split('/').filter(Boolean);
+    return segs.length ? '/' + segs.join('/') : '';
+  });
   let domainErr = $state('');
   let confirmName = $state('');
   let reveal = $state(false);
@@ -294,12 +302,25 @@
     e.preventDefault();
     domainErr = '';
     try {
+      // The server splits "app.example.com/api" into host and path, and
+      // keeps the path's case.
       await api.post(`/apps/${aid}/domains`, {
-        host: newDomain.host.trim().toLowerCase(),
+        host: newDomain.host.trim(),
         port: Number(newDomain.port) || 0,
         https: newDomain.https,
+        stripPath: !!newPath && newDomain.stripPath,
       });
-      newDomain = { host: '', port: newDomain.port, https: true };
+      newDomain = { host: '', port: newDomain.port, https: true, stripPath: false };
+      await refresh(false);
+    } catch (err) {
+      domainErr = err.message;
+    }
+  }
+
+  async function setStripPath(d, on) {
+    domainErr = '';
+    try {
+      await api.put(`/domains/${d.id}`, { stripPath: on });
       await refresh(false);
     } catch (err) {
       domainErr = err.message;
@@ -658,7 +679,7 @@
             <li>
               <div class="dline">
                 <Icon name="globe" size={16} />
-                <a href="{d.https ? 'https' : 'http'}://{d.host}" target="_blank" rel="noopener noreferrer">{d.host}</a>
+                <a href="{d.https ? 'https' : 'http'}://{d.host}{d.path}{d.path ? '/' : ''}" target="_blank" rel="noopener noreferrer">{d.host}{#if d.path}<span class="dpath">{d.path}</span>{/if}</a>
                 {#if editPort === d.id}
                   <form class="row tight inline" onsubmit={(e) => { e.preventDefault(); setDomainPort(d, editPortValue); }}>
                     <input type="number" min="0" max="65535" bind:value={editPortValue} placeholder="auto" aria-label="App port" class="portin" />
@@ -667,9 +688,12 @@
                   </form>
                 {:else}
                   <span class="meta">
-                    <span class="faint">→ port {routePort(d)}{d.port ? '' : ' (automatic)'}{d.https ? '' : ' · HTTP only'}</span>
+                    <span class="faint">→ port {routePort(d)}{d.port ? '' : ' (automatic)'}{d.https ? '' : ' · HTTP only'}{d.path && d.stripPath ? ' · path removed' : ''}</span>
                     {#if canDeploy}
                       <span class="acts">
+                        {#if d.path && (ui.advanced || d.stripPath)}
+                          <button class="btn ghost small" title={d.stripPath ? `The app will get ${d.path}/users` : `The app will get /users instead of ${d.path}/users`} onclick={() => setStripPath(d, !d.stripPath)}>{d.stripPath ? 'Keep path' : 'Remove path'}</button>
+                        {/if}
                         <button class="btn ghost small" onclick={() => { editPort = d.id; editPortValue = d.port || ''; }}>Change port</button>
                         <button class="btn ghost small" onclick={() => removeDomain(d.id)}>Remove</button>
                       </span>
@@ -691,7 +715,7 @@
         <form class="row" onsubmit={addDomain}>
           <label class="field host">
             <span>Domain</span>
-            <input type="text" bind:value={newDomain.host} placeholder="app.example.com" required />
+            <input type="text" bind:value={newDomain.host} placeholder="app.example.com or app.example.com/api" required />
           </label>
           <label class="field port">
             <span>App port</span>
@@ -699,6 +723,9 @@
           </label>
           {#if ui.advanced}
             <label class="check"><input type="checkbox" bind:checked={newDomain.https} /> HTTPS</label>
+            {#if newPath}
+              <label class="check" title="Off: the app gets {newPath}/users. On: it gets /users."><input type="checkbox" bind:checked={newDomain.stripPath} /> Remove {newPath} before forwarding</label>
+            {/if}
           {/if}
           <button class="btn">Add domain</button>
         </form>
@@ -707,6 +734,8 @@
         {#if canDeploy}<small class="faint">
           First add an A record for the domain pointing at {serverIp ? serverIp : "this server's IP address"}. HTTPS certificates are issued automatically.
           Leave the port empty to use the one the app listens on.
+          To share a domain between apps, add a path like <code>app.example.com/api</code>. Only that path comes here, and longer paths win.
+          {#if newPath}The app sees {newPath} in requests{ui.advanced ? ' unless you remove it' : ''}.{/if}
         </small>{/if}
       </section>
 
@@ -914,6 +943,9 @@
     gap: var(--sp-space-1);
     padding: var(--sp-space-2) 0;
     border-bottom: 1px solid var(--sp-border);
+  }
+  .dpath {
+    font-weight: 600;
   }
   .domains li:last-child {
     border-bottom: 0;

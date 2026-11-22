@@ -72,9 +72,11 @@ type exportGit struct {
 }
 
 type exportDomain struct {
-	Host  string `json:"host"`
-	Port  int    `json:"port"`
-	HTTPS bool   `json:"https"`
+	Host      string `json:"host"`
+	Path      string `json:"path,omitempty"`
+	StripPath bool   `json:"stripPath,omitempty"`
+	Port      int    `json:"port"`
+	HTTPS     bool   `json:"https"`
 }
 
 func (s *Server) exportService(r *http.Request, a *store.App, withEnv bool) (exportService, error) {
@@ -118,7 +120,7 @@ func (s *Server) exportService(r *http.Request, a *store.App, withEnv bool) (exp
 		return es, err
 	}
 	for _, d := range domains {
-		es.Domains = append(es.Domains, exportDomain{Host: d.Host, Port: d.Port, HTTPS: d.HTTPS})
+		es.Domains = append(es.Domains, exportDomain{Host: d.Host, Path: d.Path, StripPath: d.StripPath, Port: d.Port, HTTPS: d.HTTPS})
 	}
 	return es, nil
 }
@@ -316,17 +318,21 @@ func planService(es exportService, projectID int64, projectName string) (*planne
 		if err := deploy.ValidHost(host); err != nil {
 			return fail(fmt.Errorf("domain %q: %v", d.Host, err))
 		}
+		path := deploy.CleanPath(d.Path)
+		if err := deploy.ValidPath(path); err != nil {
+			return fail(fmt.Errorf("domain %q: %v", d.Host+d.Path, err))
+		}
 		if d.Port == 0 {
 			d.Port = 80
 		}
 		if err := deploy.ValidPort(d.Port); err != nil {
 			return fail(fmt.Errorf("domain %q: %v", d.Host, err))
 		}
-		if seen[host] {
-			return fail(fmt.Errorf("domain %q is listed twice", host))
+		if seen[host+path] {
+			return fail(fmt.Errorf("domain %q is listed twice", host+path))
 		}
-		seen[host] = true
-		ps.domains = append(ps.domains, store.Domain{Host: host, Port: d.Port, HTTPS: d.HTTPS})
+		seen[host+path] = true
+		ps.domains = append(ps.domains, store.Domain{Host: host, Path: path, StripPath: d.StripPath && path != "", Port: d.Port, HTTPS: d.HTTPS})
 	}
 	return ps, nil
 }
@@ -453,7 +459,7 @@ func (s *Server) importHandler(w http.ResponseWriter, r *http.Request, u *store.
 			d.AppID = ps.app.ID
 			if err := s.store.CreateDomain(ctx, &d); err != nil {
 				if errors.Is(err, store.ErrConflict) {
-					res.Warnings = append(res.Warnings, fmt.Sprintf("%s: domain %s is already used by another app and was skipped", ps.app.Name, d.Host))
+					res.Warnings = append(res.Warnings, fmt.Sprintf("%s: domain %s is already used by another app and was skipped", ps.app.Name, d.Label()))
 					continue
 				}
 				s.storeErr(w, err)

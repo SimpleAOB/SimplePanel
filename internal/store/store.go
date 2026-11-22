@@ -368,6 +368,22 @@ var migrations = []string{
 	// v10: the port the app's image says it listens on (EXPOSE), found at
 	// deploy time. Domains with port 0 route to it.
 	`ALTER TABLE apps ADD COLUMN image_port INTEGER NOT NULL DEFAULT 0;`,
+	// v11: path-prefix domains. One host can send /api to one app and the
+	// rest to another, so a host is unique together with its path now.
+	`CREATE TABLE domains_new (
+		id INTEGER PRIMARY KEY,
+		app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+		host TEXT NOT NULL,
+		path TEXT NOT NULL DEFAULT '',
+		strip_path INTEGER NOT NULL DEFAULT 0,
+		port INTEGER NOT NULL,
+		https INTEGER NOT NULL DEFAULT 1,
+		UNIQUE(host, path)
+	);
+	INSERT INTO domains_new(id,app_id,host,port,https) SELECT id,app_id,host,port,https FROM domains;
+	DROP TABLE domains;
+	ALTER TABLE domains_new RENAME TO domains;
+	CREATE INDEX domains_app ON domains(app_id);`,
 }
 
 func (s *Store) migrate() error {
@@ -835,9 +851,18 @@ type Domain struct {
 	ID    int64  `json:"id"`
 	AppID int64  `json:"appId"`
 	Host  string `json:"host"`
-	Port  int    `json:"port"`
-	HTTPS bool   `json:"https"`
+	// Path, when set ("/api"), sends only that path and what is under it to
+	// the app; "" is the whole host. Longer paths win over shorter ones.
+	Path string `json:"path"`
+	// StripPath removes Path before the request reaches the app, so the app
+	// sees /users instead of /api/users.
+	StripPath bool `json:"stripPath"`
+	Port      int  `json:"port"`
+	HTTPS     bool `json:"https"`
 }
+
+// Label is the domain as people write it: "example.com/api".
+func (d Domain) Label() string { return d.Host + d.Path }
 
 // DomainRoute is a domain joined with its app's service name, for the proxy.
 type DomainRoute struct {
@@ -846,7 +871,7 @@ type DomainRoute struct {
 }
 
 func (s *Store) Domains(ctx context.Context, appID int64) ([]Domain, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,app_id,host,port,https FROM domains WHERE app_id=? ORDER BY host`, appID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,app_id,host,path,strip_path,port,https FROM domains WHERE app_id=? ORDER BY host,path`, appID)
 	if err != nil {
 		return nil, err
 	}
@@ -854,7 +879,7 @@ func (s *Store) Domains(ctx context.Context, appID int64) ([]Domain, error) {
 	out := []Domain{}
 	for rows.Next() {
 		var d Domain
-		if err := rows.Scan(&d.ID, &d.AppID, &d.Host, &d.Port, &d.HTTPS); err != nil {
+		if err := rows.Scan(&d.ID, &d.AppID, &d.Host, &d.Path, &d.StripPath, &d.Port, &d.HTTPS); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -863,7 +888,7 @@ func (s *Store) Domains(ctx context.Context, appID int64) ([]Domain, error) {
 }
 
 func (s *Store) AllRoutes(ctx context.Context) ([]DomainRoute, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.app_id,d.host,CASE WHEN d.port>0 THEN d.port WHEN a.image_port>0 THEN a.image_port ELSE 80 END,d.https,p.name||'_'||a.name
+	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.app_id,d.host,d.path,d.strip_path,CASE WHEN d.port>0 THEN d.port WHEN a.image_port>0 THEN a.image_port ELSE 80 END,d.https,p.name||'_'||a.name
 		FROM domains d JOIN apps a ON a.id=d.app_id JOIN projects p ON p.id=a.project_id ORDER BY d.id`)
 	if err != nil {
 		return nil, err
@@ -872,7 +897,7 @@ func (s *Store) AllRoutes(ctx context.Context) ([]DomainRoute, error) {
 	out := []DomainRoute{}
 	for rows.Next() {
 		var d DomainRoute
-		if err := rows.Scan(&d.ID, &d.AppID, &d.Host, &d.Port, &d.HTTPS, &d.Service); err != nil {
+		if err := rows.Scan(&d.ID, &d.AppID, &d.Host, &d.Path, &d.StripPath, &d.Port, &d.HTTPS, &d.Service); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -881,7 +906,7 @@ func (s *Store) AllRoutes(ctx context.Context) ([]DomainRoute, error) {
 }
 
 func (s *Store) CreateDomain(ctx context.Context, d *Domain) error {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO domains(app_id,host,port,https) VALUES (?,?,?,?)`, d.AppID, d.Host, d.Port, d.HTTPS)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO domains(app_id,host,path,strip_path,port,https) VALUES (?,?,?,?,?,?)`, d.AppID, d.Host, d.Path, d.StripPath, d.Port, d.HTTPS)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -891,14 +916,21 @@ func (s *Store) CreateDomain(ctx context.Context, d *Domain) error {
 
 func (s *Store) Domain(ctx context.Context, id int64) (*Domain, error) {
 	var d Domain
-	err := s.db.QueryRowContext(ctx, `SELECT id,app_id,host,port,https FROM domains WHERE id=?`, id).
-		Scan(&d.ID, &d.AppID, &d.Host, &d.Port, &d.HTTPS)
+	err := s.db.QueryRowContext(ctx, `SELECT id,app_id,host,path,strip_path,port,https FROM domains WHERE id=?`, id).
+		Scan(&d.ID, &d.AppID, &d.Host, &d.Path, &d.StripPath, &d.Port, &d.HTTPS)
 	return &d, mapErr(err)
 }
 
 // SetDomainPort changes the app port a domain routes to (0: automatic).
 func (s *Store) SetDomainPort(ctx context.Context, id int64, port int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE domains SET port=? WHERE id=?`, port, id)
+	return err
+}
+
+// SetDomainStripPath sets whether a path domain removes its path before
+// forwarding.
+func (s *Store) SetDomainStripPath(ctx context.Context, id int64, strip bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE domains SET strip_path=? WHERE id=?`, strip, id)
 	return err
 }
 

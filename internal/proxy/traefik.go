@@ -22,9 +22,16 @@ type Route struct {
 	Port    int
 	HTTPS   bool
 	// Path, when set instead of Host, routes that path prefix on every
-	// host (plain HTTP only), ahead of all host routes.
+	// host (plain HTTP only), ahead of all host routes. With Host, it routes
+	// only that path on that host, ahead of the host's shorter paths.
 	Path string
+	// StripPath removes Path from the request before it reaches the app.
+	StripPath bool
 }
+
+// pathPriority puts host+path routes ahead of the plain host route and
+// longer paths ahead of shorter ones, below the global check path.
+const pathPriority = 10000
 
 const (
 	certResolver = "letsencrypt"
@@ -62,46 +69,62 @@ type service struct {
 func Render(routes []Route) ([]byte, error) {
 	routers := map[string]router{}
 	services := map[string]service{}
+	middlewares := map[string]any{
+		redirectMW: map[string]any{"redirectScheme": map[string]any{"scheme": "https", "permanent": true}},
+		securityMW: map[string]any{"headers": map[string]any{
+			"stsSeconds":         31536000,
+			"contentTypeNosniff": true,
+			"referrerPolicy":     "strict-origin-when-cross-origin",
+		}},
+	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Key < routes[j].Key })
 	for _, r := range routes {
 		svcName := "sp-" + r.Key
 		var s service
 		s.LoadBalancer.Servers = []server{{URL: fmt.Sprintf("http://%s:%d", r.Service, r.Port)}}
 		services[svcName] = s
-		if r.Path != "" {
+		if r.Host == "" && r.Path != "" {
 			routers["sp-"+r.Key+"-http"] = router{
 				Rule: fmt.Sprintf("PathPrefix(`%s`)", r.Path), EntryPoints: []string{entryHTTP}, Service: svcName, Priority: 1 << 20,
 			}
 			continue
 		}
 		rule := fmt.Sprintf("Host(`%s`)", r.Host)
+		prio := 0
+		var extra []string
+		if r.Path != "" {
+			// Path(/api) || PathPrefix(/api/) matches /api and /api/x but
+			// not /apix, which a bare PathPrefix(/api) would.
+			rule += fmt.Sprintf(" && (Path(`%s`) || PathPrefix(`%s/`))", r.Path, r.Path)
+			prio = pathPriority + len(r.Path)
+			if r.StripPath {
+				mw := "sp-" + r.Key + "-strip"
+				middlewares[mw] = map[string]any{"stripPrefix": map[string]any{"prefixes": []string{r.Path}}}
+				extra = append(extra, mw)
+			}
+		}
 		if r.HTTPS {
 			routers["sp-"+r.Key+"-https"] = router{
 				Rule: rule, EntryPoints: []string{entryHTTPS}, Service: svcName,
-				Middlewares: []string{securityMW}, TLS: &tlsCfg{CertResolver: certResolver},
+				Middlewares: append([]string{securityMW}, extra...), TLS: &tlsCfg{CertResolver: certResolver},
+				Priority: prio,
 			}
 			routers["sp-"+r.Key+"-http"] = router{
 				Rule: rule, EntryPoints: []string{entryHTTP}, Service: svcName,
-				Middlewares: []string{redirectMW},
+				Middlewares: []string{redirectMW}, Priority: prio,
 			}
 		} else {
 			routers["sp-"+r.Key+"-http"] = router{
 				Rule: rule, EntryPoints: []string{entryHTTP}, Service: svcName,
+				Middlewares: extra, Priority: prio,
 			}
 		}
 	}
 	doc := map[string]any{
 		"http": map[string]any{
-			"middlewares": map[string]any{
-				redirectMW: map[string]any{"redirectScheme": map[string]any{"scheme": "https", "permanent": true}},
-				securityMW: map[string]any{"headers": map[string]any{
-					"stsSeconds":         31536000,
-					"contentTypeNosniff": true,
-					"referrerPolicy":     "strict-origin-when-cross-origin",
-				}},
-			},
-			"routers":  routers,
-			"services": services,
+			"middlewares": middlewares,
+			"routers":     routers,
+			"services":    services,
 		},
 	}
 	if len(routers) == 0 {

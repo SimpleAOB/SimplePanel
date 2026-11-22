@@ -974,10 +974,24 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	d.AppID = a.ID
+	// "example.com/api" in the host field is a path domain, as is an
+	// explicit path; an explicit path wins.
+	if d.Path == "" {
+		d.Path = deploy.DomainPath(d.Host)
+	} else {
+		d.Path = deploy.CleanPath(d.Path)
+	}
 	d.Host = deploy.CleanHost(d.Host)
 	if err := deploy.ValidHost(d.Host); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if err := deploy.ValidPath(d.Path); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if d.Path == "" {
+		d.StripPath = false
 	}
 	// Port 0 is "automatic": the port the image listens on, else 80.
 	if d.Port != 0 {
@@ -996,7 +1010,7 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 	}
 	if err := s.store.CreateDomain(r.Context(), &d); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeErr(w, 409, s.domainOwner(r.Context(), d.Host, a.ID))
+			writeErr(w, 409, s.domainOwner(r.Context(), d.Host, d.Path, a.ID))
 			return
 		}
 		s.storeErr(w, err)
@@ -1008,25 +1022,31 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request, u *store.U
 	writeJSON(w, 201, d)
 }
 
-// domainOwner explains which app already uses a domain.
-func (s *Server) domainOwner(ctx context.Context, host string, appID int64) string {
+// domainOwner explains which app already uses a domain (host and path).
+func (s *Server) domainOwner(ctx context.Context, host, path string, appID int64) string {
+	label := host + path
 	routes, err := s.store.AllRoutes(ctx)
 	if err == nil {
 		for _, rt := range routes {
-			if rt.Host == host && rt.AppID == appID {
-				return "this app already has the domain " + host
+			if rt.Host != host || rt.Path != path {
+				continue
 			}
-			if rt.Host == host {
-				if a, err := s.store.App(ctx, rt.AppID); err == nil {
-					return fmt.Sprintf("the app %s in project %s already uses %s. Remove it there first", a.Name, a.ProjectName, host)
+			if rt.AppID == appID {
+				return "this app already has " + label
+			}
+			if a, err := s.store.App(ctx, rt.AppID); err == nil {
+				if path == "" {
+					return fmt.Sprintf("the app %s in project %s already uses %s. Remove it there first, or add a path like %s/api to send only part of the site here", a.Name, a.ProjectName, label, host)
 				}
+				return fmt.Sprintf("the app %s in project %s already uses %s. Remove it there first", a.Name, a.ProjectName, label)
 			}
 		}
 	}
-	return "another app already uses " + host + ". Remove it there first"
+	return "another app already uses " + label + ". Remove it there first"
 }
 
-// updateDomain changes the app port a domain sends traffic to.
+// updateDomain changes the app port a domain sends traffic to, or whether a
+// path domain removes its path before forwarding.
 func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request, u *store.User) {
 	id, ok := pathID(r)
 	if !ok {
@@ -1042,25 +1062,39 @@ func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	var in struct {
-		Port int `json:"port"`
+		Port      *int  `json:"port"`
+		StripPath *bool `json:"stripPath"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if in.Port != 0 {
-		if err := deploy.ValidPort(in.Port); err != nil {
+	if in.Port != nil && *in.Port != 0 {
+		if err := deploy.ValidPort(*in.Port); err != nil {
 			writeErr(w, 400, err.Error())
 			return
 		}
 	}
-	if err := s.store.SetDomainPort(r.Context(), id, in.Port); err != nil {
-		s.storeErr(w, err)
+	if in.StripPath != nil && *in.StripPath && d.Path == "" {
+		writeErr(w, 400, "only a domain with a path, like example.com/api, can remove its path")
 		return
+	}
+	if in.Port != nil {
+		if err := s.store.SetDomainPort(r.Context(), id, *in.Port); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		d.Port = *in.Port
+	}
+	if in.StripPath != nil {
+		if err := s.store.SetDomainStripPath(r.Context(), id, *in.StripPath); err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		d.StripPath = *in.StripPath
 	}
 	if err := s.deploy.SyncProxy(r.Context()); err != nil {
 		s.log.Error("proxy sync", "err", err)
 	}
-	d.Port = in.Port
 	writeJSON(w, 200, d)
 }
 
