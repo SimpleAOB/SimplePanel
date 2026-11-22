@@ -535,7 +535,7 @@ func (c *mcpCall) serviceSummary(a *store.App) map[string]any {
 	if ds, err := c.s.store.Domains(c.ctx, a.ID); err == nil && len(ds) > 0 {
 		hosts := []string{}
 		for _, d := range ds {
-			hosts = append(hosts, d.Host)
+			hosts = append(hosts, d.Label())
 		}
 		out["domains"] = hosts
 	}
@@ -1418,18 +1418,22 @@ func init() {
 		},
 		{
 			name: "add_domain", title: "Add a domain", scope: store.ScopeManage, audit: true,
-			description: "Serves an app on a domain with automatic HTTPS (Let's Encrypt). The domain's DNS must point at this server. Takes effect right away.",
+			description: "Serves an app on a domain with automatic HTTPS (Let's Encrypt). The domain's DNS must point at this server. Give a path (e.g. /api) to send only that part of the domain to this app, so one domain can serve a frontend and a backend; longer paths win. Takes effect right away.",
 			props: map[string]any{
-				"service": pService,
-				"host":    prop("string", "Domain, e.g. app.example.com."),
-				"port":    prop("integer", "Port the app listens on inside the container. Default 80."),
+				"service":    pService,
+				"host":       prop("string", "Domain, e.g. app.example.com."),
+				"path":       prop("string", "Optional path prefix, e.g. /api. Empty sends the whole domain."),
+				"strip_path": prop("boolean", "Remove the path before forwarding, so the app sees /users instead of /api/users. Default false."),
+				"port":       prop("integer", "Port the app listens on inside the container. Default: the port the image declares, else 80."),
 			},
 			required: []string{"service", "host"},
 			run: func(c *mcpCall) (any, error) {
 				var a struct {
-					Service string `json:"service"`
-					Host    string `json:"host"`
-					Port    int    `json:"port"`
+					Service   string `json:"service"`
+					Host      string `json:"host"`
+					Path      string `json:"path"`
+					StripPath bool   `json:"strip_path"`
+					Port      int    `json:"port"`
 				}
 				if err := c.bind(&a); err != nil {
 					return nil, err
@@ -1439,14 +1443,14 @@ func init() {
 					return nil, err
 				}
 				out, err := c.invoke(c.s.createDomain, "POST", "/", map[string]string{"id": strconv.FormatInt(app.ID, 10)},
-					map[string]any{"host": a.Host, "port": a.Port, "https": true})
+					map[string]any{"host": a.Host, "path": a.Path, "stripPath": a.StripPath, "port": a.Port, "https": true})
 				return json.RawMessage(out), err
 			},
 		},
 		{
 			name: "remove_domain", title: "Remove a domain", scope: store.ScopeManage, audit: true,
 			description: "Stops serving an app on a domain. Takes effect right away.",
-			props:       map[string]any{"service": pService, "host": prop("string", "Domain to remove.")},
+			props:       map[string]any{"service": pService, "host": prop("string", "Domain to remove, with its path if it has one (e.g. app.example.com/api).")},
 			required:    []string{"service", "host"},
 			run: func(c *mcpCall) (any, error) {
 				var a struct {
@@ -1464,12 +1468,13 @@ func init() {
 				if err != nil {
 					return nil, err
 				}
+				host, path := deploy.CleanHost(a.Host), deploy.DomainPath(a.Host)
 				for _, d := range ds {
-					if d.Host == strings.ToLower(strings.TrimSpace(a.Host)) {
+					if d.Host == host && d.Path == path {
 						if _, err := c.invoke(c.s.deleteDomain, "DELETE", "/", map[string]string{"id": strconv.FormatInt(d.ID, 10)}, nil); err != nil {
 							return nil, err
 						}
-						return "Removed " + d.Host + ".", nil
+						return "Removed " + d.Label() + ".", nil
 					}
 				}
 				return nil, fmt.Errorf("%s has no domain %q", c.target, a.Host)

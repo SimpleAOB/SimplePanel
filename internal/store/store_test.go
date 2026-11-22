@@ -68,6 +68,20 @@ func TestAppsDomainsCascade(t *testing.T) {
 	if err := s.CreateDomain(ctx, &Domain{AppID: a.ID, Host: "x.example.com", Port: 80}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate domain should conflict, got %v", err)
 	}
+	// The same host with a path is a separate domain; the same path twice isn't.
+	if err := s.CreateDomain(ctx, &Domain{AppID: a.ID, Host: "x.example.com", Path: "/api", StripPath: true, Port: 3000, HTTPS: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDomain(ctx, &Domain{AppID: a.ID, Host: "x.example.com", Path: "/api", Port: 80}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate host+path should conflict, got %v", err)
+	}
+	ds, _ := s.Domains(ctx, a.ID)
+	if len(ds) != 2 || ds[1].Path != "/api" || !ds[1].StripPath || ds[1].Label() != "x.example.com/api" {
+		t.Fatalf("domains: %+v", ds)
+	}
+	if err := s.DeleteDomain(ctx, ds[1].ID); err != nil {
+		t.Fatal(err)
+	}
 	routes, _ := s.AllRoutes(ctx)
 	if len(routes) != 1 || routes[0].Service != "proj_web" {
 		t.Fatalf("routes: %+v", routes)

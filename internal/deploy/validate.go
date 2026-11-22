@@ -174,6 +174,65 @@ func CleanHost(s string) string {
 	return strings.TrimSuffix(s, ".")
 }
 
+// DomainPath finds the path in what people paste into a domain field:
+// "https://example.com/api/?x=1" gives "/api". The root ("/" or none) is "".
+// Paths keep their case, since servers usually treat /API and /api apart.
+func DomainPath(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	i := strings.Index(s, "/")
+	if i < 0 {
+		return ""
+	}
+	return CleanPath(s[i:])
+}
+
+// CleanPath normalizes a path prefix: a leading slash, no trailing slash,
+// no empty segments. "/" and "" both mean the whole host and give "".
+func CleanPath(p string) string {
+	p = strings.TrimSpace(p)
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	var segs []string
+	for _, seg := range strings.Split(p, "/") {
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	if len(segs) == 0 {
+		return ""
+	}
+	return "/" + strings.Join(segs, "/")
+}
+
+var pathSegRe = regexp.MustCompile(`^[A-Za-z0-9._~%@+-]+$`)
+
+// ValidPath checks a cleaned path prefix ("" is the whole host). Only
+// characters that are safe in a URL path and in a Traefik rule are allowed.
+func ValidPath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if len(p) > 200 {
+		return errors.New("the path is too long; keep it under 200 characters")
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "." || seg == ".." {
+			return errors.New(`the path can't contain "." or ".." parts`)
+		}
+		if !pathSegRe.MatchString(seg) {
+			return errors.New("the path can only use letters, numbers and - _ . ~, like /api or /api/v2")
+		}
+	}
+	return nil
+}
+
 func ValidHost(s string) error {
 	if len(s) > 253 || net.ParseIP(s) != nil {
 		return errors.New("enter a domain name like app.example.com")

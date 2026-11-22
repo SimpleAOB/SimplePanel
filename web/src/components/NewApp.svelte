@@ -160,7 +160,7 @@
       const app = await api.post(`/projects/${pid}/apps`, { ...payload({ ...form, name: appSlug }), ...(Number(port) > 0 ? { httpPort: Number(port) } : {}) });
       if (domain.trim()) {
         try {
-          await api.post(`/apps/${app.id}/domains`, { host: domain.trim().toLowerCase(), port: Number(port) || 0, https: true });
+          await api.post(`/apps/${app.id}/domains`, { host: domain.trim(), port: Number(port) || 0, https: true });
         } catch (err) {
           error = `App created, but the domain was not added: ${err.message}`;
         }

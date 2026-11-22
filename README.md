@@ -57,6 +57,8 @@ Example: `curl -fsSL … | sudo ACME_EMAIL=you@example.com sh`
 - **Domains with automatic HTTPS** via Let's Encrypt. Traffic goes to the
   port the app's image declares (`EXPOSE`) unless you pick one, and each
   domain shows whether its DNS points at the server and HTTPS works.
+  Add a path (`example.com/api`) to split one domain between apps, such as
+  a backend on `/api` and a frontend on the rest.
 - **Databases**: PostgreSQL, MySQL, MariaDB, MongoDB and Redis with your own
   or generated credentials, a
   persistent volume and a copyable connection URL. Databases are only

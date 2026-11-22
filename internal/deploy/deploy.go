@@ -335,9 +335,9 @@ func (m *Manager) detectPort(ctx context.Context, app *store.App, image string, 
 	for _, d := range domains {
 		switch {
 		case d.Port == 0 && p == 0:
-			lb.Printf("Note: the image doesn't say which port it listens on, so %s goes to port 80. If the site doesn't load, set the app port on the domain.", d.Host)
+			lb.Printf("Note: the image doesn't say which port it listens on, so %s goes to port 80. If the site doesn't load, set the app port on the domain.", d.Label())
 		case d.Port > 0 && len(ports) > 0 && !slices.Contains(ports, d.Port):
-			lb.Printf("Warning: %s sends visitors to port %d, but the image listens on %s. If the site doesn't load, change the domain's port on the app's Overview.", d.Host, d.Port, strings.Join(list, ", "))
+			lb.Printf("Warning: %s sends visitors to port %d, but the image listens on %s. If the site doesn't load, change the domain's port on the app's Overview.", d.Label(), d.Port, strings.Join(list, ", "))
 		}
 	}
 	if app.HTTPPort == 0 && p == 0 {
@@ -1050,8 +1050,12 @@ func (m *Manager) SyncProxy(ctx context.Context) error {
 	taken := map[string]bool{}
 	firstPort := map[int64]int{}
 	for _, r := range routes {
-		rs = append(rs, proxy.Route{Key: fmt.Sprintf("d%d", r.ID), Host: r.Host, Service: r.Service, Port: r.Port, HTTPS: r.HTTPS})
-		taken[r.Host] = true
+		rs = append(rs, proxy.Route{Key: fmt.Sprintf("d%d", r.ID), Host: r.Host, Path: r.Path, StripPath: r.StripPath,
+			Service: r.Service, Port: r.Port, HTTPS: r.HTTPS})
+		if r.Path == "" {
+			// A path domain on an automatic subdomain only takes its path.
+			taken[r.Host] = true
+		}
 		if _, ok := firstPort[r.AppID]; !ok {
 			firstPort[r.AppID] = r.Port
 		}
