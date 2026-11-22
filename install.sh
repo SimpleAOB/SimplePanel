@@ -450,12 +450,19 @@ printf '\n\033[1;32mSimplePanel is running.\033[0m\n\n'
 printf '  Open  http://%s:%s  to create your admin account.\n' "${public_ip:-<server-ip>}" "$SP_PORT"
 # Ask the panel rather than trusting existing_install: a re-run after an
 # install that never finished still has no admin account.
-if curl -fsS "http://127.0.0.1:$SP_PORT/api/setup" 2>/dev/null | grep -q '"needsSetup":true'; then
+setup_state=$(curl -fsS "http://127.0.0.1:$SP_PORT/api/setup" 2>/dev/null || true)
+if printf '%s' "$setup_state" | grep -q '"needsSetup":true'; then
 	code=$(current_setup_code)
-	if [ -n "$code" ]; then
+	# Only promise a code the panel actually checks: images from before
+	# setup codes (v1.0.0 and older) ignore SP_SETUP_CODE and don't report
+	# needsCode, so the page would not ask for it.
+	if [ -n "$code" ] && printf '%s' "$setup_state" | grep -q '"needsCode":true'; then
 		printf '  Setup code:  \033[1m%s\033[0m  (the page asks for it)\n' "$code"
 	else
-		printf '  Do this now: the first person to open the page claims the server.\n'
+		printf '  \033[1;33mDo this now:\033[0m the first person to open the page claims the server.\n'
+		if [ -n "$code" ]; then
+			printf '  %s is older than setup codes, so the page will not ask for one.\n' "$SP_IMAGE"
+		fi
 	fi
 fi
 if [ -n "$host_cap" ]; then
