@@ -82,22 +82,28 @@ func testCert(t *testing.T) (*tls.Certificate, *x509.CertPool) {
 	return &pair, pool
 }
 
-func startProxy(t *testing.T, cfg Config) (string, *bytes.Buffer) {
+func startProxy(t *testing.T, cfg Config) (string, *syncBuf) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	var log syncBuf
-	cfg.Log = &log
+	log := &syncBuf{}
+	cfg.Log = log
 	go New(cfg).Serve(ln)
-	return ln.Addr().String(), &log.b
+	return ln.Addr().String(), log
 }
 
 type syncBuf struct {
 	mu sync.Mutex
 	b  bytes.Buffer
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func (s *syncBuf) Write(p []byte) (int, error) {
@@ -360,12 +366,12 @@ func TestRefusalLogThrottled(t *testing.T) {
 	p := New(Config{Log: &log, Now: func() time.Time { return now }})
 	p.refused("1.2.3.4", "not on the allowlist")
 	p.refused("1.2.3.4", "not on the allowlist")
-	if n := strings.Count(log.b.String(), "refused"); n != 1 {
+	if n := strings.Count(log.String(), "refused"); n != 1 {
 		t.Fatalf("%d lines", n)
 	}
 	now = now.Add(11 * time.Minute)
 	p.refused("1.2.3.4", "not on the allowlist")
-	if n := strings.Count(log.b.String(), "refused"); n != 2 {
+	if n := strings.Count(log.String(), "refused"); n != 2 {
 		t.Fatalf("%d lines after 11 minutes", n)
 	}
 }
