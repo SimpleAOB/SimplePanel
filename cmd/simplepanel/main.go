@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	"github.com/SimpleAOB/SimplePanel/internal/gitprovider"
 	"github.com/SimpleAOB/SimplePanel/internal/monitor"
 	"github.com/SimpleAOB/SimplePanel/internal/notify"
+	"github.com/SimpleAOB/SimplePanel/internal/publicproxy"
 	"github.com/SimpleAOB/SimplePanel/internal/store"
 	"github.com/SimpleAOB/SimplePanel/internal/update"
 	"github.com/SimpleAOB/SimplePanel/internal/web"
@@ -38,6 +40,10 @@ func env(key, def string) string {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "public-proxy" {
+		runPublicProxy()
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
 		log.Error("fatal", "err", err)
@@ -102,6 +108,8 @@ func run(log *slog.Logger) error {
 		PanelPort:    3000,
 		EndpointMode: env("SP_ENDPOINT_MODE", "vip"),
 		HelperImage:  env("SP_HELPER_IMAGE", deploy.DefaultHelperImage),
+		PublicImage:  env("SP_PUBLIC_IMAGE", ""),
+		HostProc:     hostProc(),
 	}, st, dc, log)
 
 	notifier := notify.New(st, log)
@@ -164,6 +172,7 @@ func run(log *slog.Logger) error {
 
 	crons.Start(ctx)
 	dm.StartRunArchiver(ctx)
+	go dm.SyncPublic(ctx)
 	srv.Use(backups, mon, notifier)
 	srv.StartJanitor(ctx)
 
@@ -268,4 +277,35 @@ func watchDocker(dc *docker.Client, n *notify.Notifier) {
 			}
 		})
 	})
+}
+
+// runPublicProxy runs the TCP proxy that makes a database reachable from
+// the internet. SimplePanel starts it as a separate Swarm service from its
+// own image; see internal/publicproxy.
+func runPublicProxy() {
+	cfg, err := publicproxy.ConfigFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "public-proxy:", err)
+		os.Exit(2)
+	}
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "public-proxy:", err)
+		os.Exit(1)
+	}
+	if err := publicproxy.New(cfg).Serve(ln); err != nil {
+		fmt.Fprintln(os.Stderr, "public-proxy:", err)
+		os.Exit(1)
+	}
+}
+
+// hostProc is the host's /proc when the installer mounted it in.
+func hostProc() string {
+	if v := os.Getenv("SP_PROC_DIR"); v != "" {
+		return v
+	}
+	if _, err := os.Stat("/host/proc/1/net/tcp"); err == nil {
+		return "/host/proc"
+	}
+	return ""
 }

@@ -446,17 +446,14 @@ func (in *appInput) apply(a *store.App) error {
 		if deploy.ValidPort(int(p.Published)) != nil || deploy.ValidPort(int(p.Target)) != nil {
 			return errors.New("ports must be between 1 and 65535")
 		}
-		if p.Published == 80 || p.Published == 443 || p.Published == 3000 || int(p.Published) == publicPort() {
-			return fmt.Errorf("port %d is used by SimplePanel; use a domain instead", p.Published)
-		}
 		// Swarm's routing mesh takes a published port before the server's
 		// own programs see it: publishing SSH's port would lock everyone
 		// out, and Swarm's own ports would break Docker networking.
-		switch p.Published {
-		case 22:
-			return errors.New("port 22 is the server's SSH port; publishing it would lock you out of the server")
-		case 2377, 7946, 4789:
-			return fmt.Errorf("port %d is used by Docker Swarm itself", p.Published)
+		if why := reservedPort(int(p.Published)); why != "" {
+			if strings.HasSuffix(why, "SimplePanel") {
+				why += "; use a domain instead"
+			}
+			return errors.New(why)
 		}
 		a.Ports = append(a.Ports, p)
 	}
@@ -701,6 +698,7 @@ func (s *Server) getApp(w http.ResponseWriter, r *http.Request, u *store.User) {
 		}
 		out["database"] = info
 		out["aiAccess"], _, _ = s.store.AIAccess(r.Context(), a.ID)
+		out["public"] = s.publicInfo(r, a, lvl)
 		out["canQuery"] = deploy.QuerySupported(a.Kind) && u.CanQueryDatabases()
 		if e := deploy.EngineByKey(a.Kind); e != nil {
 			out["aiAccessSupported"] = e.AIAccess

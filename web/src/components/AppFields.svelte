@@ -229,7 +229,7 @@
         </div>
       {/each}
       <div><button type="button" class="btn small" onclick={addPort}>Add port</button></div>
-      <small>{database ? 'Publishing a database port exposes it to the internet. Only do this with a firewall rule.' : 'Only for non-HTTP services. Websites should use a domain instead.'}</small>
+      <small>{database ? 'To connect database tools from the internet, use Public access on the Overview instead: it adds an IP allowlist, encryption and connection limits, and never restarts the database.' : 'Only for non-HTTP services. Websites should use a domain instead.'}</small>
     </div>
   {/if}
 </div>

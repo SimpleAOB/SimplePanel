@@ -411,11 +411,17 @@ type TaskSpec struct {
 }
 
 type ContainerSpec struct {
-	Image  string            `json:"Image"`
-	Labels map[string]string `json:"Labels,omitempty"`
-	Args   []string          `json:"Args,omitempty"`
-	Env    []string          `json:"Env,omitempty"`
-	Mounts []Mount           `json:"Mounts,omitempty"`
+	Image       string            `json:"Image"`
+	Labels      map[string]string `json:"Labels,omitempty"`
+	Args        []string          `json:"Args,omitempty"`
+	Env         []string          `json:"Env,omitempty"`
+	Mounts      []Mount           `json:"Mounts,omitempty"`
+	Healthcheck *Healthcheck      `json:"Healthcheck,omitempty"`
+}
+
+// Healthcheck overrides the image's HEALTHCHECK; Test ["NONE"] turns it off.
+type Healthcheck struct {
+	Test []string `json:"Test,omitempty"`
 }
 
 type Mount struct {
@@ -549,6 +555,13 @@ type Task struct {
 	Spec struct {
 		ContainerSpec struct{ Image string }
 	}
+}
+
+// Services lists every Swarm service, SimplePanel's or not.
+func (c *Client) Services(ctx context.Context) ([]Service, error) {
+	var out []Service
+	err := c.doJSON(ctx, http.MethodGet, "/services", nil, nil, &out)
+	return out, err
 }
 
 // ServicesByLabel lists services carrying label ("key" or "key=value") in

@@ -368,6 +368,13 @@ var migrations = []string{
 	// v10: the port the app's image says it listens on (EXPOSE), found at
 	// deploy time. Domains with port 0 route to it.
 	`ALTER TABLE apps ADD COLUMN image_port INTEGER NOT NULL DEFAULT 0;`,
+	// v11: public access to one-click databases through a TCP proxy
+	// service. public_port 0 means off; the certificate is the proxy's.
+	`ALTER TABLE apps ADD COLUMN public_port INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE apps ADD COLUMN public_allow TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN public_tls INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE apps ADD COLUMN public_cert TEXT NOT NULL DEFAULT '';
+	ALTER TABLE apps ADD COLUMN public_key TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate() error {
@@ -616,6 +623,16 @@ type App struct {
 	// ImagePort is the port the deployed image declares with EXPOSE (0:
 	// unknown or none). Domains with port 0 ("automatic") route to it.
 	ImagePort int `json:"imagePort"`
+
+	// Public access (databases only): the port the public proxy listens on
+	// (0: off), allowed client addresses (CIDRs, one per line; empty:
+	// anyone), whether unencrypted connections are refused, and the
+	// proxy's TLS certificate and key.
+	PublicPort  int    `json:"publicPort"`
+	PublicAllow string `json:"publicAllow"`
+	PublicTLS   bool   `json:"publicRequireTls"`
+	PublicCert  string `json:"-"`
+	PublicKey   string `json:"-"`
 }
 
 // RoutePort is the port a domain with the given port setting routes to:
@@ -642,6 +659,34 @@ func (s *Store) SetImagePort(ctx context.Context, appID int64, port int) error {
 	return err
 }
 
+// SetPublicAccess saves a database's public access settings. port 0 turns
+// it off; the certificate is kept so its fingerprint stays the same if it
+// is turned on again.
+func (s *Store) SetPublicAccess(ctx context.Context, appID int64, port int, allow string, requireTLS bool, cert, key string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET public_port=?,public_allow=?,public_tls=?,public_cert=?,public_key=? WHERE id=?`,
+		port, allow, requireTLS, cert, key, appID)
+	return err
+}
+
+// PublicPorts lists the public database ports in use, by app ID.
+func (s *Store) PublicPorts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, public_port FROM apps WHERE public_port > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var p int
+		if err := rows.Scan(&id, &p); err != nil {
+			return nil, err
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
+}
+
 // IsPreview reports whether the app is a pull request preview.
 func (a *App) IsPreview() bool { return a.ParentAppID != 0 }
 
@@ -657,7 +702,7 @@ const appCols = `a.id,a.project_id,p.name,a.name,a.kind,a.source,a.image,a.git_u
 	a.webhook_token,a.created_at,a.updated_at,a.build_type,a.build_image,a.build_command,a.output_dir,a.spa,
 	a.auto_domain,a.http_port,COALESCE(a.git_provider_id,0),a.git_repo,a.auto_deploy,a.previews,a.preview_env,
 	COALESCE(a.parent_app_id,0),a.pr_number,a.pr_title,a.pr_url,a.pr_comment_id,a.deploy_key,a.deploy_key_pub,a.ssh_known_hosts,
-	COALESCE(a.registry_id,0),a.image_port`
+	COALESCE(a.registry_id,0),a.image_port,a.public_port,a.public_allow,a.public_tls,a.public_cert,a.public_key`
 
 type scanner interface{ Scan(...any) error }
 
@@ -669,7 +714,8 @@ func scanApp(r scanner) (*App, error) {
 		&vols, &ports, &a.WebhookToken, &a.CreatedAt, &a.UpdatedAt,
 		&a.BuildType, &a.BuildImage, &a.BuildCommand, &a.OutputDir, &a.SPA, &a.AutoDomain, &a.HTTPPort,
 		&a.GitProviderID, &a.GitRepo, &a.AutoDeploy, &a.Previews, &a.PreviewEnv,
-		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts, &a.RegistryID, &a.ImagePort)
+		&a.ParentAppID, &a.PRNumber, &a.PRTitle, &a.PRURL, &a.PRCommentID, &a.DeployKey, &a.DeployKeyPub, &a.SSHKnownHosts, &a.RegistryID, &a.ImagePort,
+		&a.PublicPort, &a.PublicAllow, &a.PublicTLS, &a.PublicCert, &a.PublicKey)
 	if err != nil {
 		return nil, mapErr(err)
 	}

@@ -554,6 +554,11 @@ func (s *Server) removeApp(ctx context.Context, a *store.App) error {
 			return err
 		}
 	}
+	if a.IsDatabase() {
+		if err := s.deploy.RemovePublic(ctx, a); err != nil {
+			return err
+		}
+	}
 	var err error
 	if a.IsPreview() {
 		err = s.deploy.RemoveWithVolumes(ctx, a)
