@@ -63,6 +63,10 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Server memory and limits | `GET /api/capacity` (`?app=ID` also returns what the other services are allowed); admins: `PUT /api/capacity/settings {"reserveMb":0,"noAutoLimits":false}` |
 | Memory limit of a service | `"memoryMb"` in `PUT /api/apps/{id}`: `0` automatic (sized to the server), `-1` no limit, or MB (at least 16) |
 | Is Docker answering | `GET /api/docker` (never waits on Docker: `{"ok":false,"since":…,"error":…}` while it isn't) |
+| Public database access | `GET /api/apps/{id}/public`; owners and admins: `PUT /api/apps/{id}/public {"enabled":true,"port":5432,"allow":"203.0.113.7\n198.51.100.0/24","requireTls":true}` (`allow` empty: anyone with the password; left out: keep the current list), `{"enabled":false}` to close it |
+| Is a port free | `GET /api/apps/{id}/public/port?port=5432` → `{"ok","message"}` |
+| Public access certificate, recent connections | `GET /api/apps/{id}/public/cert` (PEM), `GET /api/apps/{id}/public/log` |
+| New database password | `POST /api/apps/{id}/password` (owners and admins; also updates and redeploys apps in the project that used the old one) |
 | Saved queries and your history | `GET`/`POST /api/apps/{id}/query/saved`, `DELETE /api/saved-queries/{id}`, `GET /api/apps/{id}/query/history` |
 
 Deploys, starts and restarts are refused with `409 {"code":"memory_pressure"}`
