@@ -56,12 +56,17 @@ Errors come back as `{"error": "message"}` with a 4xx or 5xx status.
 | Update SimplePanel | `POST /api/update {"version":"0.4.0"}` (the latest stable release only; 409 with `jobsRunning` while deploys or backups run, add `"force":true` to go ahead) |
 | Automatic updates | `PUT /api/update/settings {"auto":true,"hour":3}` (`hour` is server time, `-1` for any time) |
 | Registry logins (private images) | `GET /api/registries`; admins: `POST /api/registries {"name","server","username","password"}` (signs in first; add `"skipCheck":true` to skip), `PUT`/`DELETE /api/registries/{id}`, `POST /api/registries/test` |
+| What an image declares | `GET /api/projects/{id}/image-info?image=ghcr.io/me/app:1&registryId=3` returns `env` (`[{"key","value"}]` from its ENV), `ports` (EXPOSE) and `port` (the one domains use). Reads the image on this server if it's there, else its config from the registry, without downloading layers. `registryId` left out: the saved login for the image's registry; `0`: none. Unreadable images answer `{"found":false,"error"}` |
 | Pick a service's registry login | `PUT /api/apps/{id}` with `"registryId": N` (`0` for none; leave it out to use the only saved login for the image's registry) |
 | Domains | `POST /api/apps/{id}/domains {"host","path","stripPath","port","https"}` (`port` 0 or left out: the port the image EXPOSEs, else 80; `path` such as `/api` sends only that path on the host to this app, longer paths win, and a host like `example.com/api` works too; `stripPath` removes the path before forwarding), `PUT /api/domains/{id} {"port","stripPath"}` (either field), `DELETE /api/domains/{id}` |
 | Check a domain's DNS and HTTPS | `GET /api/dns/check?host=app.example.com` (add `&https=0` to skip HTTPS). `dns` is `ok`, `missing`, `elsewhere`, `unreachable` or `proxied`; `https` is `ok`, `pending` or `error` |
 | Server memory and limits | `GET /api/capacity` (`?app=ID` also returns what the other services are allowed); admins: `PUT /api/capacity/settings {"reserveMb":0,"noAutoLimits":false}` |
 | Memory limit of a service | `"memoryMb"` in `PUT /api/apps/{id}`: `0` automatic (sized to the server), `-1` no limit, or MB (at least 16) |
 | Is Docker answering | `GET /api/docker` (never waits on Docker: `{"ok":false,"since":…,"error":…}` while it isn't) |
+| Public database access | `GET /api/apps/{id}/public`; owners and admins: `PUT /api/apps/{id}/public {"enabled":true,"port":5432,"allow":"203.0.113.7\n198.51.100.0/24","requireTls":true}` (`allow` empty: anyone with the password; left out: keep the current list), `{"enabled":false}` to close it |
+| Is a port free | `GET /api/apps/{id}/public/port?port=5432` → `{"ok","message"}` |
+| Public access certificate, recent connections | `GET /api/apps/{id}/public/cert` (PEM), `GET /api/apps/{id}/public/log` |
+| New database password | `POST /api/apps/{id}/password` (owners and admins; also updates and redeploys apps in the project that used the old one) |
 | Saved queries and your history | `GET`/`POST /api/apps/{id}/query/saved`, `DELETE /api/saved-queries/{id}`, `GET /api/apps/{id}/query/history` |
 
 Deploys, starts and restarts are refused with `409 {"code":"memory_pressure"}`

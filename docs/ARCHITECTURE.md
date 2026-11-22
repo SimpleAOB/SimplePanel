@@ -181,8 +181,35 @@ buildpacks) are planned.
 3. The UI shows host, port, user, password and a connection URL to copy into
    an app's environment, e.g. `postgres://shop:…@shop_db:5432/shop`.
 
-Advanced view can publish a database port to the internet; the UI warns that
-this needs a firewall rule.
+#### Public access
+Owners and admins can let database tools connect from the internet (off by
+default). SimplePanel never publishes the database's own port. Instead it
+starts a small proxy service, `<project>_<db>_public`, from the panel's own
+image (`simplepanel public-proxy`, see `internal/publicproxy`):
+
+- It joins the project network and forwards to the database, so turning
+  access on, off or changing it never restarts the database or its apps.
+- Its port is published in **host mode** (not the routing mesh) so it sees
+  each client's real address, which the IP allowlist needs. Updates are
+  stop-first, and a proxy that can't start rolls back.
+- TLS: the proxy terminates TLS for PostgreSQL (answers `SSLRequest`, and
+  direct TLS for PostgreSQL 17 clients), MongoDB and Redis with a self-signed
+  certificate made per database (fingerprint and download in Advanced view).
+  MySQL and MariaDB encrypt end to end with the server's own certificate; the
+  proxy only checks that the client asked for TLS. TLS is required by
+  default.
+- Limits: 60 new connections a minute (burst 30) and 32 open connections per
+  address, 256 in total. Connections and refusals are logged (refusals at
+  most once per address every 10 minutes, so scanners can't flood the log).
+- Turning it on needs a password of at least 16 characters; `POST
+  /api/apps/{id}/password` sets a new one inside the database and updates
+  apps in the project that used the old one.
+- Ports must be 1024-65535 and free: not used by SimplePanel, Swarm, another
+  app, another Swarm service or a program on the host (read from the host's
+  `/proc/1/net/tcp`).
+- At startup the panel recreates missing proxies and moves them to its own
+  current image (after an update), and removes proxies of databases that are
+  no longer public. Deleting a database removes its proxy.
 
 ### Deploy webhooks
 Each app has a secret webhook URL (`/api/hooks/deploy/<192-bit token>`),

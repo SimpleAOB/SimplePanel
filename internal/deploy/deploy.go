@@ -38,6 +38,13 @@ type Config struct {
 	EndpointMode string
 	// HelperImage runs short-lived volume backup and restore containers.
 	HelperImage string
+	// PublicImage runs the public database proxy. Empty: the panel's own
+	// image, read from its Swarm service.
+	PublicImage string
+	// HostProc is the host's /proc when it is mounted in ("/host/proc"),
+	// used to see which ports programs on the server listen on. Empty:
+	// skip that check.
+	HostProc string
 }
 
 type Manager struct {

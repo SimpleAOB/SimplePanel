@@ -6,6 +6,7 @@
   import { guardedPost } from '../lib/memory.svelte.js';
   import MemoryPicker from './MemoryPicker.svelte';
   import AppFields from './AppFields.svelte';
+  import ImageEnv from './ImageEnv.svelte';
   import Topbar from './Topbar.svelte';
   import Icon from './Icon.svelte';
 
@@ -53,6 +54,11 @@
   let domain = $state(draft?.domain || '');
   let port = $state(draft?.port || '');
   let envOpen = $state(!!draft?.form?.env);
+  // Image apps always show their variables, so they can be set before the
+  // first start; the image's own ENV is offered as rows to fill in.
+  let envShown = $derived(envOpen || form.source === 'image');
+  let imageInfo = $state(null);
+  let imagePort = $derived(form.source === 'image' ? imageInfo?.port || 0 : 0);
   let wildcard = $state('');
   let more = $state(false);
   let appSlug = $derived((form.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, ''));
@@ -247,8 +253,11 @@
 
   <div class="card domain">
     <h3>Environment variables <span class="faint">(optional)</span></h3>
-    {#if envOpen}
-      <textarea bind:value={form.env} rows="6" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;SECRET_KEY=…"></textarea>
+    {#if envShown}
+      {#if form.source === 'image'}
+        <ImageEnv image={form.image} registryId={form.registryId} projectId={ui.route.projectId} bind:env={form.env} bind:info={imageInfo} />
+      {/if}
+      <textarea bind:value={form.env} rows={form.source === 'image' ? 4 : 6} spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;SECRET_KEY=…"></textarea>
       <small class="faint">One <code>KEY=value</code> per line, or paste a <code>.env</code> file. You can change them later in the Environment tab.</small>
       {#if projectDbs.length}
         <select class="insert" aria-label="Insert a database's connection URL" onchange={insertDb}>
@@ -271,12 +280,12 @@
       </label>
       <label class="field port">
         <span>App port</span>
-        <input type="number" min="0" max="65535" bind:value={port} placeholder="auto" />
+        <input type="number" min="0" max="65535" bind:value={port} placeholder={imagePort ? `auto (${imagePort})` : 'auto'} />
       </label>
     </div>
     <small class="faint">
       Add an A record for the domain pointing at this server first. HTTPS certificates are issued automatically.
-      Leave the port empty and SimplePanel uses the port the app's image says it listens on (or 80).
+      {#if imagePort}Leave the port empty and SimplePanel uses {imagePort}, the port the image listens on.{:else}Leave the port empty and SimplePanel uses the port the app's image says it listens on (or 80).{/if}
     </small>
     {#if !domain.trim()}
       {#if autoAddress}

@@ -1,4 +1,5 @@
 <script>
+  import ImageEnv from './ImageEnv.svelte';
   import { copyText } from '../lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
@@ -18,6 +19,7 @@
   import GitCard from './GitCard.svelte';
   import CronJobs from './CronJobs.svelte';
   import QueryView from './QueryView.svelte';
+  import PublicAccess from './PublicAccess.svelte';
 
   let exporting = $state(false);
 
@@ -419,6 +421,7 @@
   <Topbar>
     {detail.app.name}
     <StatusBadge status={badge} />
+    {#if detail.public?.enabled}<span class="pubpill" title="Reachable from the internet on port {detail.public.port}"><Icon name="globe" size={12} /> Public</span>{/if}
     {#snippet actions()}
       {#if canDeploy}<button class="btn primary" disabled={!!busy} onclick={deploy} title={isDb ? 'Recreate the database container with its current settings. Data is kept.' : 'Build and start the latest version'}><span class="ico"><Icon name="refresh" size={16} /></span> {isDb ? 'Redeploy' : 'Deploy'}</button>{/if}
       <button
@@ -568,7 +571,7 @@
             <h3>Connection</h3>
             <button class="btn ghost small" onclick={() => (reveal = !reveal)}><Icon name="eye" size={16} /> {reveal ? 'Hide' : 'Show'} secrets</button>
           </div>
-          <p class="muted">Apps in this project connect with these details. The database is not reachable from the internet.</p>
+          <p class="muted">Apps in this project connect with these details.{detail.public?.enabled ? ' Tools on the internet use the public address below.' : ' The database is not reachable from the internet.'}</p>
           <dl class="conn">
             {#each [['Host', db.host, false], ['Port', String(db.port), false], ['Database', db.database, false], ['User', db.user, false], ['Password', db.password, true], ...(db.rootPassword ? [['Root password', db.rootPassword, true]] : [])] as [label, val, secret]}
               <dt>{label}</dt>
@@ -613,6 +616,10 @@
             {/if}
           {/if}
         </section>
+
+        {#if detail.public && !isPreview}
+          <PublicAccess {aid} db={detail.database} pub={detail.public} onchange={() => refresh(false)} />
+        {/if}
 
         {#if detail.aiAccessSupported !== false}
         <section class="card">
@@ -774,6 +781,9 @@
       <form class="card" onsubmit={saveEnv}>
         <h3>Environment variables</h3>
         <p class="muted">One <code>KEY=value</code> per line, or paste a whole <code>.env</code> file. Lines starting with # are ignored. Changes apply when the app deploys.</p>
+        {#if detail.app.source === 'image'}
+          <ImageEnv image={detail.app.image} registryId={detail.app.registryId || 0} projectId={pid} bind:env />
+        {/if}
         <textarea bind:value={env} rows="12" spellcheck="false" placeholder="DATABASE_URL=postgres://…&#10;NODE_ENV=production"></textarea>
         <div class="row between envbar">
           {#if dbs.length}
@@ -1149,6 +1159,17 @@
     .acts {
       margin-left: 0;
     }
+  }
+  .pubpill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--sp-text-xs);
+    font-weight: var(--sp-weight-bold);
+    padding: 1px var(--sp-space-2);
+    border-radius: var(--sp-radius-round);
+    color: var(--sp-warning);
+    border: 1px solid var(--sp-warning);
   }
   .repo {
     margin: 0;
