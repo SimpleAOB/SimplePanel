@@ -58,6 +58,9 @@ type Server struct {
 	loginFails   *limiter // failed sign-ins per IP
 	hookLimit    *limiter
 	mcpAuthLimit *limiter // failed MCP token attempts per IP
+
+	registry   *docker.RegistryClient
+	imageLimit *limiter // image lookups per user
 }
 
 func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *slog.Logger, version string) *Server {
@@ -68,6 +71,8 @@ func New(st *store.Store, dc *docker.Client, dm *deploy.Manager, ui fs.FS, log *
 		hookLimit:    newLimiter(30, time.Minute),
 		mcpAuthLimit: newLimiter(20, 10*time.Minute),
 		git:          gitprovider.New(),
+		registry:     docker.NewRegistryClient(),
+		imageLimit:   newLimiter(30, time.Minute),
 	}
 }
 
@@ -173,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 	a("POST /api/projects/{id}/apps", s.createApp)
 	a("POST /api/projects/{id}/databases", s.createDatabase)
 	a("GET /api/engines", s.listEngines)
+	a("GET /api/projects/{id}/image-info", s.imageInfo)
 	a("GET /api/projects/{id}/export", s.exportProjectHandler)
 	a("GET /api/apps/{id}/export", s.exportAppHandler)
 	a("POST /api/import", s.importHandler)
