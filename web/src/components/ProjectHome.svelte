@@ -15,6 +15,8 @@
   let apps = $derived(data.appsFor === ui.route.projectId ? data.apps : []);
   let error = $state('');
   let confirmName = $state('');
+  let deleteData = $state(true);
+  let withData = $derived(apps.filter((a) => a.volumes?.length > 0).length);
   let level = $derived(projectLevel(ui.route.projectId));
   let usage = $state({});
 
@@ -28,7 +30,8 @@
   async function remove() {
     error = '';
     try {
-      await api.del(`/projects/${project.id}`);
+      const r = await api.del(`/projects/${project.id}${withData && deleteData ? '?deleteData=1' : ''}`);
+      if (r?.warnings?.length) ui.flash = r.warnings.join(' ');
       await loadProjects();
       go('/');
     } catch (err) {
@@ -47,6 +50,7 @@
     {/snippet}
   </Topbar>
   <div class="page">
+    {#if ui.flash}<p class="notice flash">{ui.flash} <button class="btn ghost small" onclick={() => (ui.flash = '')}>Dismiss</button></p>{/if}
     {#if apps.length === 0}
       <div class="card empty">
         {#if level >= 2}
@@ -103,7 +107,15 @@
     {#if isAdmin()}
       <section class="card danger-zone">
         <h3>Delete project</h3>
-        <p class="muted">Removes every app and database in this project, and their domains. Their data stays in Docker volumes on the server's disk.</p>
+        <p class="muted">Removes every app and database in this project, and their domains.</p>
+        {#if withData}
+          <label class="check"><input type="checkbox" bind:checked={deleteData} /> Also delete their data</label>
+          {#if deleteData}
+            <p class="warn">The data of {withData} {withData === 1 ? 'service' : 'services'} will be deleted for good. Back it up first if you might need it.</p>
+          {:else}
+            <p class="muted">Their data stays in Docker volumes on the server's disk. New services with the same names would start on top of it.</p>
+          {/if}
+        {/if}
         <div class="row">
           <label class="field">
             <span>Type the project name to confirm</span>
@@ -126,6 +138,24 @@
 {/if}
 
 <style>
+  .check {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-space-2);
+    font-size: var(--sp-text-sm);
+  }
+  .warn {
+    margin: 0;
+    color: var(--sp-warning);
+    font-size: var(--sp-text-sm);
+  }
+  .flash {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-space-3);
+    margin: 0;
+  }
   .page {
     padding: var(--sp-space-5);
     display: flex;

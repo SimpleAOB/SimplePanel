@@ -3,6 +3,7 @@
   import { copyText } from '../lib/clipboard.js';
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
+  import { withLeftoverCheck, put } from '../lib/leftover.svelte.js';
   import { ui, data, go, loadApps, setPanelOpen, showDeployment, showRun, timeAgo, appIcon, isAdmin, depLabel, depDot, setLeaveGuard } from '../lib/state.svelte.js';
   import { explainFailure, DOCKERFILE_HELP } from '../lib/explain.js';
   import { parseLog } from '../lib/logs.js';
@@ -42,6 +43,9 @@
   });
   let domainErr = $state('');
   let confirmName = $state('');
+  // Deleting also deletes the stored data unless unchecked, so a new
+  // service with the same name starts clean.
+  let deleteData = $state(true);
   let reveal = $state(false);
   let copied = $state('');
   let isDb = $derived(!!detail?.database);
@@ -257,7 +261,7 @@
     saved = '';
     let ok = false;
     await action('save', async () => {
-      await api.put(`/apps/${aid}`, payload(fields));
+      await withLeftoverCheck(put, `/apps/${aid}`, payload(fields), { allowKeep: true });
       ok = true;
       saved = deployAfter ? 'Saved. Deploying…' : 'Saved. Deploy to apply the changes.';
       if (deployAfter) {
@@ -345,7 +349,9 @@
 
   async function removeApp() {
     await action('delete', async () => {
-      await api.del(`/apps/${aid}`);
+      const vols = detail.app.volumes?.length > 0;
+      const r = await api.del(`/apps/${aid}${vols && deleteData ? '?deleteData=1' : ''}`);
+      if (r?.warnings?.length) ui.flash = r.warnings.join(' ');
       await loadApps(pid);
       go(`/p/${pid}`);
     });
@@ -858,7 +864,15 @@
       {#if canManage}
       <section class="card danger-zone">
         <h3>Delete {isDb ? 'database' : 'app'}</h3>
-        <p class="muted">{isDb ? 'Removes the database from SimplePanel. Its data stays on the server’s disk in a Docker volume, so it can be recovered by hand.' : 'Removes the app and its domains. Data in its volumes stays on the server’s disk.'}</p>
+        <p class="muted">{isDb ? 'Removes the database from SimplePanel.' : 'Removes the app and its domains.'}</p>
+        {#if detail.app.volumes?.length}
+          <label class="check delete-data"><input type="checkbox" bind:checked={deleteData} /> Also delete its {isDb ? 'data' : 'volumes'}</label>
+          {#if deleteData}
+            <p class="warn">The {isDb ? 'data' : 'files in its volumes'} will be deleted for good. Back {isDb ? 'it' : 'them'} up first if you might need {isDb ? 'it' : 'them'}.</p>
+          {:else}
+            <p class="muted small-note">The data stays on the server’s disk in Docker {detail.app.volumes.length === 1 ? 'volume' : 'volumes'} {detail.app.volumes.map((v) => `${detail.app.projectName}_${detail.app.name}_${v.name}`).join(', ')}. A new {isDb ? 'database' : 'app'} with the same name would start on top of it.</p>
+          {/if}
+        {/if}
         <div class="row">
           <label class="field">
             <span>Type the {isDb ? 'database' : 'app'} name to confirm</span>
@@ -1086,6 +1100,14 @@
   }
   .tokenform {
     flex: 1 1 260px;
+  }
+  .delete-data {
+    height: auto;
+  }
+  .small-note {
+    margin: 0;
+    font-size: var(--sp-text-sm);
+    overflow-wrap: anywhere;
   }
   .warn {
     margin: 0;

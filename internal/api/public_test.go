@@ -27,6 +27,7 @@ type fakeSwarm struct {
 	mu       sync.Mutex
 	services map[string]docker.ServiceSpec
 	failNext string // the next task fails with this error
+	volumes  map[string]bool
 }
 
 func (f *fakeSwarm) handler(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +43,19 @@ func (f *fakeSwarm) handler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	case p == "/version":
 		w.Write([]byte(`{"ApiVersion":"1.45"}`))
+	case strings.HasPrefix(p, "/volumes/"):
+		name := strings.TrimPrefix(p, "/volumes/")
+		if !f.volumes[name] {
+			w.WriteHeader(404)
+			w.Write([]byte(`{"message":"no such volume"}`))
+			return
+		}
+		if r.Method == "DELETE" {
+			delete(f.volumes, name)
+			w.WriteHeader(204)
+			return
+		}
+		w.Write([]byte(`{"Name":"` + name + `"}`))
 	case strings.HasPrefix(p, "/networks"):
 		w.Write([]byte(`{}`))
 	case p == "/services" && r.Method == "GET":
@@ -104,7 +118,7 @@ func newPublicServer(t *testing.T) (string, *http.Client, *store.Store, *fakeSwa
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs := &fakeSwarm{services: map[string]docker.ServiceSpec{
+	fs := &fakeSwarm{volumes: map[string]bool{}, services: map[string]docker.ServiceSpec{
 		"other_thing": {Name: "other_thing", EndpointSpec: &docker.EndpointSpec{Ports: []docker.PortSpec{{PublishedPort: 6000, TargetPort: 6000}}}},
 	}}
 	fd := &httptest.Server{Listener: ln, Config: &http.Server{Handler: http.HandlerFunc(fs.handler)}}

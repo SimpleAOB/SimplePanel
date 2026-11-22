@@ -4,6 +4,7 @@
   import { ui, data, go, loadApps, showDeployment, isAdmin } from '../lib/state.svelte.js';
   import { emptyForm, payload, withDbUrl } from '../lib/appform.js';
   import { guardedPost } from '../lib/memory.svelte.js';
+  import { withLeftoverCheck, post } from '../lib/leftover.svelte.js';
   import MemoryPicker from './MemoryPicker.svelte';
   import AppFields from './AppFields.svelte';
   import ImageEnv from './ImageEnv.svelte';
@@ -132,14 +133,14 @@
 
   async function submitDatabase() {
     const pid = ui.route.projectId;
-    const r = await guardedPost(`/projects/${pid}/databases`, {
+    const r = await withLeftoverCheck(guardedPost, `/projects/${pid}/databases`, {
       name: appSlug,
       engine,
       image: ui.advanced ? dbImage.trim() : '',
       user: customUser ? dbUser.trim() : '',
       password: dbPassword,
       memoryMb: Number(dbMemory) || 0,
-    });
+    }, { allowKeep: false });
     await loadApps(pid);
     clearDraft();
     showDeployment(r.deployment.id);
@@ -157,7 +158,7 @@
         return;
       }
       // The port also sets the automatic subdomain's port.
-      const app = await api.post(`/projects/${pid}/apps`, { ...payload({ ...form, name: appSlug }), ...(Number(port) > 0 ? { httpPort: Number(port) } : {}) });
+      const app = await withLeftoverCheck(post, `/projects/${pid}/apps`, { ...payload({ ...form, name: appSlug }), ...(Number(port) > 0 ? { httpPort: Number(port) } : {}) }, { allowKeep: true });
       if (domain.trim()) {
         try {
           await api.post(`/apps/${app.id}/domains`, { host: domain.trim(), port: Number(port) || 0, https: true });

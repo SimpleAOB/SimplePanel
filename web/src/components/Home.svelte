@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
-  import { data, go, initials, loadProjects } from '../lib/state.svelte.js';
+  import { ui, data, go, initials, loadProjects } from '../lib/state.svelte.js';
   import Topbar from './Topbar.svelte';
   import ImportDialog from './ImportDialog.svelte';
   import Metrics from './Metrics.svelte';
@@ -112,6 +112,7 @@
 </Topbar>
 {#if importing}<ImportDialog onclose={() => (importing = false)} />{/if}
 <div class="page">
+  {#if ui.flash}<p class="notice flash">{ui.flash} <button class="btn ghost small" onclick={() => (ui.flash = '')}>Dismiss</button></p>{/if}
   <section class="hero">
     <h1>Welcome to SimplePanel</h1>
     <p class="muted">Deploy apps from a Git repository or a Docker image, with domains and automatic HTTPS.</p>
@@ -220,6 +221,13 @@
 </div>
 
 <style>
+  .flash {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-space-3);
+    margin: 0;
+  }
   .page {
     padding: var(--sp-space-5);
     display: flex;
